@@ -54,9 +54,6 @@ struct UDPHeader {
 #define UDP_HDR_LEN (sizeof(struct UDPHeader))
 #define IPPROTO_UDP 17
 
-/* error codes */
-#define ERR_PKT_TOO_LARGE       2
-
 
 /*
  * copy data to buffer and SLIP-encode them on the way
@@ -202,8 +199,9 @@ int main(int argc, char **argv)
         if (connect(sockfd, (struct sockaddr*) &addr, sizeof(struct sockaddr_un)) != -1) {
             printf("connected to TFTP daemon\n");
 
-            if (send_packet(sockfd, (uint8_t *) "hello\xc0\xdb", 8) != -1) {
-                printf("sent packet to daemon\n");
+            /* send a TFTP WRQ packet to the daemon */
+            if (send_packet(sockfd, (uint8_t *) "\x00\x02hello.txt\x00NETASCII", 21) != -1) {
+                printf("sent WRQ packet to daemon\n");
             }
             else {
                 perror("could not send packet to daemon");
