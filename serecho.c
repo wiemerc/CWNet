@@ -1,8 +1,8 @@
 /*
  * serecho.c - simple test program for the serial interface that just echos 
- *             everything it receives
+ *             everything it receives, but using asynchronous IO requests
  *
- * Copyright(C) 2017, Constantin Wiemer
+ * Copyright(C) 2017, 2018 Constantin Wiemer
  */
 
 
@@ -25,6 +25,7 @@ int main()
     struct IOExtSer *req;
     struct IOTArray termchars = {0x00000000, 0x00000000};
     char rxbuf[BUF_SIZE], txbuf[BUF_SIZE];
+    ULONG signals, running = 1;
 
     if ((port = CreateMsgPort())) {
         if ((req = (struct IOExtSer *) CreateExtIO(port, sizeof(struct IOExtSer)))) {
@@ -34,36 +35,57 @@ int main()
                 req->io_SerFlags     |= SERF_EOFMODE;
                 req->io_TermArray     = termchars;
                 if (DoIO((struct IORequest *) req) == 0) {
-                    while(1) {
-                        /* read message */
-                        req->IOSer.io_Command = CMD_READ;
-                        req->IOSer.io_Length  = BUF_SIZE;
-                        req->IOSer.io_Data    = (APTR) rxbuf;
-                        if (DoIO((struct IORequest *) req) != 0) {
-                            printf("reading from serial device failed: error = %d\n", req->IOSer.io_Error);
-                            break;
-                        }
-                        printf("message received: %s\n", rxbuf);
-                        if (rxbuf[0] == '.') {
-                            /* client wants us to terminate */
-                            printf("terminating...\n");
+                    /* read first message */
+                    req->IOSer.io_Command = CMD_READ;
+                    req->IOSer.io_Length  = BUF_SIZE;
+                    req->IOSer.io_Data    = (APTR) rxbuf;
+                    SendIO((struct IORequest *) req);
+                    while(running) {
+                        signals = Wait(SIGBREAKF_CTRL_C | 1l << port->mp_SigBit);
+                        if (signals & SIGBREAKF_CTRL_C) {
+                            printf("received Ctrl-C\n");
                             break;
                         }
                         else {
-                            /* send answer */
-                            printf("sending answer...\n");
-                            strncpy(txbuf, "ECHO: ", BUF_SIZE);
-                            strncat (txbuf, rxbuf, BUF_SIZE - 7);
-                            req->IOSer.io_Command = CMD_WRITE;
-                            req->IOSer.io_Length  = -1;
-                            req->IOSer.io_Data    = (APTR) txbuf;
-
-                            if (DoIO((struct IORequest *) req) != 0) {
-                                printf("writing to serial device failed: error = %d\n", req->IOSer.io_Error);
+                            /* must be a reply message, but we better check anyway... */
+                            if (!CheckIO((struct IORequest *) req))
+                                continue;
+                            if (WaitIO((struct IORequest *) req) != 0) {
+                                printf("reading from / writing to serial device failed: error = %d\n", req->IOSer.io_Error);
                                 break;
+                            }
+                            switch (req->IOSer.io_Command) {
+                                case CMD_READ:
+                                    printf("read request finished => sending answer\n");
+                                    if (rxbuf[0] == '.') {
+                                        printf("client wants us to terminate\n");
+                                        running = 0;
+                                        break;
+                                    }
+                                    strncpy(txbuf, "ECHO: ", BUF_SIZE);
+                                    strncat (txbuf, rxbuf, BUF_SIZE - 7);
+                                    req->IOSer.io_Command = CMD_WRITE;
+                                    req->IOSer.io_Length  = -1;
+                                    req->IOSer.io_Data    = (APTR) txbuf;
+                                    SendIO((struct IORequest *) req);
+                                    break;
+
+                                case CMD_WRITE:
+                                    printf("write request finished => reading next message\n");
+                                    req->IOSer.io_Command = CMD_READ;
+                                    req->IOSer.io_Length  = BUF_SIZE;
+                                    req->IOSer.io_Data    = (APTR) rxbuf;
+                                    SendIO((struct IORequest *) req);
+                                    break;
+
+                                default:
+                                    printf("unknown command type in reply message: %d\n", req->IOSer.io_Command);
                             }
                         }
                     }
+                    printf("terminating...\n");
+                    AbortIO((struct IORequest *) req);
+                    WaitIO((struct IORequest *) req);
                 }
                 else {
                     printf("configuring serial device failed: error = %d\n", req->IOSer.io_Error);
@@ -86,4 +108,3 @@ int main()
 
     return 0;
 }
-
