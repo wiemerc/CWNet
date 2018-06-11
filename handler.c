@@ -1,6 +1,6 @@
 /*
- * cwnet.c - AmigaDOS handler that allows uploading files to a TFTP server
- *           over a serial link (using SLIP)
+ * handler.c - part of CWNet, an AmigaDOS handler that allows uploading files to a TFTP server
+ *             over a serial link (using SLIP)
  *
  * Copyright(C) 2017, 2018 Constantin Wiemer
  */
@@ -18,20 +18,24 @@
 #include <exec/memory.h>
 #include <exec/types.h>
 #include <proto/alib.h>
-#include <proto/exec.h>
 #include <proto/dos.h>
-#include <proto/intuition.h>
-#include <string.h>
+#include <proto/exec.h>
 #include <stdio.h>
+#include <string.h>
 
 
-#define C_TO_BCPL_PTR(ptr) (((ULONG) (ptr)) >> 2)
-#define BCPL_TO_C_PTR(ptr) (((ULONG) (ptr)) << 2)
+#define C_TO_BCPL_PTR(ptr) ((BPTR) (((ULONG) (ptr)) >> 2))
+#define BCPL_TO_C_PTR(ptr) ((APTR) (((ULONG) (ptr)) << 2))
 #define LOG(fmt, ...) {sprintf(logmsg, fmt, ##__VA_ARGS__); log(logmsg);}
 
 /*
  * constants
  */
+/* The declaration below is a workaround for a bug in GCC which causes it to create a
+ * corrupt executable (additional null word at the end of HUNK_DATA) if there are no
+ * relocations for the data block. By referencing a string constant, which is placed at
+ * the beginning of the code block, we make sure there is at least one relocation. */
+static const char *dummy = "bla";
 
 
 /*
@@ -82,29 +86,65 @@ static void log(const char *msg)
  */
 void entry()
 {
-    struct Process *proc = (struct Process *) FindTask(NULL);
-    struct MsgPort *port = &(proc->pr_MsgPort);
-    struct DosPacket *pkt;
+    struct Process    *proc = (struct Process *) FindTask(NULL);
+    struct MsgPort    *port = &(proc->pr_MsgPort);
+    struct DeviceNode *dnode;
+    struct DosPacket  *pkt;
+    int                running = 1;
 
     /* wait for startup packet, set up everything and return packet */
     WaitPort(port);
     pkt = (struct DosPacket *) GetMsg(port)->mn_Node.ln_Name;
-    ((struct DeviceNode *) BCPL_TO_C_PTR(pkt->dp_Arg3))->dn_Task = port;
+
+    /* tell DOS not to start a new handler for every request */
+    dnode = (struct DeviceNode *) BCPL_TO_C_PTR(pkt->dp_Arg3);
+    dnode->dn_Task = port;
+
     /* initialization of handler goes here... */
+
     return_packet(pkt, DOSTRUE, pkt->dp_Res2);
 
 //    Alert(AT_DeadEnd | AN_Unknown | AG_BadParm | AO_Unknown);
     if ((logport = CreateMsgPort()) != NULL) {
+        /* There is a race condition here: We have to return the startup packet before
+         * we set up logging, but a client could already send a packet to us before the
+         * Open() call has finished, which would result in undefined behaviour. 
+         * However, as we are started when the mount command is issued, this is unlikely. */
         if ((logfh = Open("CON:0/0/800/200/CWNET Console", MODE_NEWFILE)) != 0) {
             LOG("DEBUG: received startup packet\n");
 
-            while(1) {
+            while(running) {
                 WaitPort(port);
                 pkt = (struct DosPacket *) GetMsg(port)->mn_Node.ln_Name;
                 LOG("DEBUG: received DOS packet with type %ld\n", pkt->dp_Type);
                 switch (pkt->dp_Type) {
+                    case ACTION_IS_FILESYSTEM:
+                        LOG("DEBUG: packet type = ACTION_IS_FILESYSTEM\n");
+                        return_packet(pkt, DOSFALSE, 0);
+                        break;
+
                     case ACTION_FINDOUTPUT:
                         LOG("DEBUG: packet type = ACTION_FINDOUTPUT\n");
+                        /* TODO */
+                        break;
+
+                    case ACTION_WRITE:
+                        LOG("DEBUG: packet type = ACTION_WRITE\n");
+                        /* TODO */
+                        break;
+
+                    case ACTION_END:
+                        LOG("DEBUG: packet type = ACTION_END\n");
+                        /* TODO */
+                        break;
+
+                    case ACTION_DIE:
+                        LOG("DEBUG: packet type = ACTION_DIE\n");
+                        LOG("INFO: ACTION_DIE packet received - shutting down\n");
+                        /* tell DOS not to send us any more packets */
+                        dnode->dn_Task = NULL;
+                        running = 0;
+                        return_packet(pkt, DOSTRUE, 0);
                         break;
 
                     default:
@@ -112,7 +152,8 @@ void entry()
                         return_packet(pkt, DOSFALSE, ERROR_ACTION_NOT_KNOWN);
                 }
             }
-            Delay(250);
+            CLEANUP:
+            Delay(150);
             Close(logfh);
         }
         DeleteMsgPort(logport);
