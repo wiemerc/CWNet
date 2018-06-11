@@ -3,16 +3,19 @@ CFLAGS  := -Wall
 
 .PHONY: all clean
 
-all: serecho logtest cwnet-handler
+all: serecho logtest unmount cwnet-handler
 
 clean:
 	rm -f *.o serecho logtest cwnet-handler
 
 serecho: serecho.o
-	$(CC) -noixemul -o $@ $@.o
+	$(CC) -noixemul -s -o $@ $@.o
 
 logtest: logtest.o
-	$(CC) -noixemul -o $@ $@.o
+	$(CC) -noixemul -s -o $@ $@.o
+
+unmount: unmount.o
+	$(CC) -noixemul -s -o $@ $@.o
 
 cwnet-handler: cwcrt0.o handler.o
 	$(CC) -L/opt/m68k-amigaos//m68k-amigaos/libnix/lib -L/opt/m68k-amigaos//m68k-amigaos/libnix/lib/libnix -s -o $@ $^ -lamiga -lnix
