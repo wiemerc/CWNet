@@ -20,21 +20,20 @@
 #include <proto/alib.h>
 #include <proto/dos.h>
 #include <proto/exec.h>
-#include <stdio.h>
-#include <string.h>
 
+#include "util.h"
 #include "netio.h"
 
 
+/*
+ * structure holding all the information of an ongoing file transfer
+ */
 typedef struct 
 {
     ULONG dummy;
 } FileTransfer;
 
 
-/*
- * constants
- */
 /*
  * The declaration below is a workaround for a bug in GCC which causes it to create a
  * corrupt executable (additional null word at the end of HUNK_DATA) if there are no
@@ -50,15 +49,6 @@ static const char *dummy = "bla";
 struct MsgPort *logport;
 BPTR logfh;
 char logmsg[256];
-
-
-char *BCPL_TO_C_STR(char *buffer, BSTR str) {
-    memcpy(buffer,
-           ((char *) BCPL_TO_C_PTR(str)) + 1,
-           ((char *) BCPL_TO_C_PTR(str))[0]);
-    buffer[(int) ((char *) BCPL_TO_C_PTR(str))[0]] = 0;
-    return buffer;
-}
 
 
 /*
@@ -175,7 +165,7 @@ void entry()
                         LOG("DEBUG: sent write request to server\n");
                         if (recv_tftp_packet(req, tftppkt) == 0) {
                             LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
-                            dump_packet(tftppkt->b_addr, tftppkt->b_size);
+                            dump_buffer(tftppkt);
                             switch (get_opcode(tftppkt)) {
                                 case OP_ACK:
                                     LOG("DEBUG: OP_ACK received from server\n");
@@ -221,7 +211,7 @@ void entry()
                         LOG("DEBUG: sent data packet #%ld to server\n", blknum);
                         if (recv_tftp_packet(req, tftppkt) == 0) {
                             LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
-                            dump_packet(tftppkt->b_addr, tftppkt->b_size);
+                            dump_buffer(tftppkt);
                             switch (get_opcode(tftppkt)) {
                                 case OP_ACK:
                                     if (get_blknum(tftppkt) == blknum) {

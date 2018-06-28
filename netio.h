@@ -1,25 +1,28 @@
-#include <devices/serial.h>
-#include <dos/dos.h>
-#include <dos/dosextens.h>
-#include <exec/io.h>
-#include <exec/memory.h>
-#include <exec/types.h>
-#include <proto/dos.h>
-#include <proto/exec.h>
-#include <stdio.h>
-#include <string.h>
+#ifndef CWNET_NETIO_H
+#define CWNET_NETIO_H
+/*
+ * netio.h - part of CWNet, an AmigaDOS handler that allows uploading files to a TFTP server
+ *           over a serial link (using SLIP)
+ *
+ * Copyright(C) 2017, 2018 Constantin Wiemer
+ */
 
 
 /*
- * generic buffer for packets and payloads
+ * included files
  */
-typedef struct {
-    UBYTE *b_addr;
-    ULONG  b_size;
-} Buffer;
+#include <devices/serial.h>
+#include <dos/dosasl.h>
+#include <exec/io.h>
+#include <exec/types.h>
+#include <proto/exec.h>
+
+#include "util.h"
 
 
-/* SLIP protocol */
+/*
+ * SLIP protocol
+ */
 #define SLIP_END                0xc0
 #define SLIP_ESCAPED_END        0xdc
 #define SLIP_ESC                0xdb
@@ -27,7 +30,7 @@ typedef struct {
 
 /* IP and UDP protocol headers, adapted from FreeBSD */
 /*
- * IP header
+ * IP
  */
 /* TODO: Do we really need to consider byte order? */
 typedef struct {
@@ -49,9 +52,10 @@ typedef struct {
     UBYTE  ip_src[4];      /* source address */
     UBYTE  ip_dst[4];      /* destination address */
 } IPHeader;
+#define IP_HDR_LEN (sizeof(IPHeader))
 
 /*
- * UDP header
+ * UDP
  */
 typedef struct {
     USHORT uh_sport;       /* source port */
@@ -59,6 +63,8 @@ typedef struct {
     USHORT uh_ulen;        /* datagram length */
     USHORT uh_sum;         /* UDP checksum */
 } UDPHeader;
+#define IPPROTO_UDP 17
+#define UDP_HDR_LEN (sizeof(UDPHeader))
 
 /*
  * TFTP
@@ -84,32 +90,14 @@ typedef struct {
 #define TFTP_MAX_DATA_SIZE 512
 #define TFTP_MAX_BLK_NUM 65535
 
-#define MAX_BUFFER_SIZE 1024
-#define IP_HDR_LEN (sizeof(IPHeader))
-#define UDP_HDR_LEN (sizeof(UDPHeader))
-#define IPPROTO_UDP 17
-
-
-/* TODO: move macros / constants used by several modules to another header */
-#define C_TO_BCPL_PTR(ptr) ((BPTR) (((ULONG) (ptr)) >> 2))
-#define BCPL_TO_C_PTR(ptr) ((APTR) (((ULONG) (ptr)) << 2))
-
-
-extern struct MsgPort *logport;
-extern BPTR logfh;
-extern char logmsg[256];
-
 
 /*
  * function prototypes
  */
-void log(const char *msg);
-#define LOG(fmt, ...) {sprintf(logmsg, fmt, ##__VA_ARGS__); log(logmsg);}
-void dump_packet(const UBYTE *buffer, ULONG length);
-Buffer *create_buffer(ULONG size);
-void delete_buffer(const Buffer *buffer);
 LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname);
 LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *bytes, LONG nbytes);
 LONG recv_tftp_packet(struct IOExtSer *req, Buffer *pkt);
 USHORT get_opcode(const Buffer *pkt);
 USHORT get_blknum(const Buffer *pkt);
+
+#endif /* CWNET_NETIO_H */

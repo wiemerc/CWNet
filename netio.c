@@ -1,39 +1,19 @@
+/*
+ * netio.c - part of CWNet, an AmigaDOS handler that allows uploading files to a TFTP server
+ *           over a serial link (using SLIP)
+ *
+ * Copyright(C) 2017, 2018 Constantin Wiemer
+ */
+
+
 #include "netio.h"
 
 
 /* TODO: unify return values indicating an error and report the exact error via netio_errno (with custom error codes) */
-void dump_packet(const UBYTE *buffer, ULONG length)
-{
-    ULONG pos = 0, i, nchars;
-    char line[256], *p;
-
-    while (pos < length) {
-        LOG("DEBUG: %04lx: ", pos);
-        for (i = pos, p = line, nchars = 0; (i < pos + 16) && (i < length); ++i, ++p, ++nchars) {
-            LOG("%02x ", buffer[i]);
-            if (buffer[i] >= 0x20 && buffer[i] <= 0x7e) {
-                sprintf(p, "%c", buffer[i]);
-            }
-            else {
-                sprintf(p, ".");
-            }
-        }
-        if (nchars < 16) {
-            for (i = 1; i <= (3 * (16 - nchars)); ++i, ++p, ++nchars) {
-                sprintf(p, " ");
-            }
-        }
-
-        LOG("\t%s\n", line);
-        pos += 16;
-    }
-}
-
-
 /*
  * copy data between two buffers and SLIP-encode them on the way
  */
-static LONG copy_and_encode_buffer(Buffer *dbuf, const Buffer *sbuf)
+static LONG slip_encode_buffer(Buffer *dbuf, const Buffer *sbuf)
 {
     const UBYTE *src = sbuf->b_addr;
     UBYTE *dst       = dbuf->b_addr;
@@ -73,7 +53,7 @@ static LONG copy_and_encode_buffer(Buffer *dbuf, const Buffer *sbuf)
 /*
  * copy data between two buffers and SLIP-decode them on the way
  */
-static LONG copy_and_decode_buffer(Buffer *dbuf, const Buffer *sbuf)
+static LONG slip_decode_buffer(Buffer *dbuf, const Buffer *sbuf)
 {
     const UBYTE *src = sbuf->b_addr;
     UBYTE *dst       = dbuf->b_addr;
@@ -133,54 +113,9 @@ static USHORT calc_checksum(const UBYTE * bytes, ULONG len)
 
 
 /*
- * log a message to the console
+ * UDP routines
  */
-void log(const char *msg)
-{
-    struct StandardPacket *pkt;
-    if ((pkt = (struct StandardPacket *) AllocVec(sizeof(struct StandardPacket), MEMF_PUBLIC | MEMF_CLEAR)) != NULL) {
-        pkt->sp_Msg.mn_ReplyPort    = logport;
-        pkt->sp_Pkt.dp_Port         = logport;
-        pkt->sp_Msg.mn_Node.ln_Name = (char *) &(pkt->sp_Pkt);
-        pkt->sp_Pkt.dp_Link         = &(pkt->sp_Msg);
-        pkt->sp_Pkt.dp_Type = ACTION_WRITE;
-        pkt->sp_Pkt.dp_Arg1 = ((struct FileHandle *) BCPL_TO_C_PTR(logfh))->fh_Arg1;
-        pkt->sp_Pkt.dp_Arg2 = (LONG) msg;
-        pkt->sp_Pkt.dp_Arg3 = strlen(msg);
-        PutMsg((struct MsgPort *) ((struct FileHandle *) BCPL_TO_C_PTR(logfh))->fh_Type, &(pkt->sp_Msg));
-        WaitPort(logport);
-        GetMsg(logport);
-        FreeVec(pkt);
-    }
-}
-
-
-/*
- * create / delete a buffer for packets or payloads
- */
-/* TODO: Do we need to store the capacity? */
-Buffer *create_buffer(ULONG size)
-{
-    Buffer *buffer;
-
-    /* allocate a memory block large enough for the Buffer structure and buffer itself */
-    if ((buffer = AllocVec(size + sizeof(Buffer), 0)) != NULL) {
-        buffer->b_addr = ((UBYTE *) buffer) + sizeof(Buffer);
-        buffer->b_size = 0;
-        return buffer;
-    }
-    else
-        return NULL;
-}
-
-
-void delete_buffer(const Buffer *buffer)
-{
-    FreeVec((APTR) buffer);
-}
-
-
-static Buffer *udp_create_packet(const Buffer *data)
+static Buffer *create_udp_packet(const Buffer *data)
 {
     Buffer *pkt;
     UDPHeader hdr;
@@ -225,7 +160,10 @@ static Buffer *get_data_from_udp_packet(const Buffer *pkt)
 }
 
 
-static Buffer *ip_create_packet(const Buffer *data)
+/*
+ * IP routines
+ */
+static Buffer *create_ip_packet(const Buffer *data)
 {
     Buffer *pkt;
     IPHeader hdr;
@@ -282,7 +220,10 @@ static Buffer *get_data_from_ip_packet(const Buffer *pkt)
 }
 
 
-static Buffer *slip_create_frame(const Buffer *data)
+/*
+ * SLIP routines
+ */
+static Buffer *create_slip_frame(const Buffer *data)
 {
     Buffer *frame;
 
@@ -292,7 +233,7 @@ static Buffer *slip_create_frame(const Buffer *data)
         return NULL;
     }
 
-    if (copy_and_encode_buffer(frame, data) < data->b_size) {
+    if (slip_encode_buffer(frame, data) < data->b_size) {
         LOG("ERROR: could not copy all data to the SLIP frame\n");
         return NULL;
     }
@@ -332,11 +273,14 @@ static BYTE recv_slip_frame(struct IOExtSer *req, Buffer *frame)
     if (error == 0)
         frame->b_size = req->IOSer.io_Actual;
     LOG("DEBUG: dump of received SLIP frame:\n");
-    dump_packet(frame->b_addr, frame->b_size);
+    dump_buffer(frame);
     return error;
 }
 
 
+/*
+ * TFTP routines
+ */
 LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname)
 {
     Buffer *curbuf, *prevbuf;
@@ -377,20 +321,20 @@ LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname
      * previous buffer once the new has been created (and ignore the memory leak when an error occurs).
      */
     prevbuf = curbuf;
-    if ((curbuf = udp_create_packet(prevbuf)) == NULL) {
+    if ((curbuf = create_udp_packet(prevbuf)) == NULL) {
         LOG("ERROR: could not create UDP packet\n");
         return ERROR_NO_FREE_STORE;
     }
     delete_buffer(prevbuf);
     prevbuf = curbuf;
-    if ((curbuf = ip_create_packet(prevbuf)) == NULL) {
+    if ((curbuf = create_ip_packet(prevbuf)) == NULL) {
         LOG("ERROR: could not create IP packet\n");
         return ERROR_NO_FREE_STORE;
     }
     delete_buffer(prevbuf);
     prevbuf = curbuf;
     /* TODO: inline creation of SLIP frame */
-    if ((curbuf = slip_create_frame(prevbuf)) == NULL) {
+    if ((curbuf = create_slip_frame(prevbuf)) == NULL) {
         LOG("ERROR: could not create SLIP frame\n");
         return ERROR_NO_FREE_STORE;
     }
@@ -424,7 +368,7 @@ LONG recv_tftp_packet(struct IOExtSer *req, Buffer *pkt)
         LOG("ERROR: could not create buffer for IP packet\n");
         return ERROR_NO_FREE_STORE;
     }
-    if (copy_and_decode_buffer(curbuf, prevbuf) == DOSFALSE) {
+    if (slip_decode_buffer(curbuf, prevbuf) == DOSFALSE) {
         LOG("ERROR: error occured while decoding SLIP frame\n");
         return 999;
     }
@@ -480,20 +424,20 @@ LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *byt
     LOG("DEBUG: size of TFTP packet = %ld\n", curbuf->b_size);
 
     prevbuf = curbuf;
-    if ((curbuf = udp_create_packet(prevbuf)) == NULL) {
+    if ((curbuf = create_udp_packet(prevbuf)) == NULL) {
         LOG("ERROR: could not create UDP packet\n");
         return ERROR_NO_FREE_STORE;
     }
     delete_buffer(prevbuf);
     prevbuf = curbuf;
-    if ((curbuf = ip_create_packet(prevbuf)) == NULL) {
+    if ((curbuf = create_ip_packet(prevbuf)) == NULL) {
         LOG("ERROR: could not create IP packet\n");
         return ERROR_NO_FREE_STORE;
     }
     delete_buffer(prevbuf);
     prevbuf = curbuf;
     /* TODO: inline creation of SLIP frame */
-    if ((curbuf = slip_create_frame(prevbuf)) == NULL) {
+    if ((curbuf = create_slip_frame(prevbuf)) == NULL) {
         LOG("ERROR: could not create SLIP frame\n");
         return ERROR_NO_FREE_STORE;
     }

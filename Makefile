@@ -17,6 +17,6 @@ logtest: logtest.o
 unmount: unmount.o
 	$(CC) -noixemul -s -o $@ $@.o
 
-cwnet-handler: cwcrt0.o handler.o netio.o
+cwnet-handler: cwcrt0.o handler.o util.o netio.o
 	$(CC) -L/opt/m68k-amigaos//m68k-amigaos/libnix/lib -L/opt/m68k-amigaos//m68k-amigaos/libnix/lib/libnix -s -o $@ $^ -lamiga -lnix
 
