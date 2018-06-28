@@ -1,4 +1,23 @@
+#include <devices/serial.h>
+#include <dos/dos.h>
+#include <dos/dosextens.h>
+#include <exec/io.h>
+#include <exec/memory.h>
 #include <exec/types.h>
+#include <proto/dos.h>
+#include <proto/exec.h>
+#include <stdio.h>
+#include <string.h>
+
+
+/*
+ * generic buffer for packets and payloads
+ */
+typedef struct {
+    UBYTE *b_addr;
+    ULONG  b_size;
+} Buffer;
+
 
 /* SLIP protocol */
 #define SLIP_END                0xc0
@@ -6,17 +25,12 @@
 #define SLIP_ESC                0xdb
 #define SLIP_ESCAPED_ESC        0xdd
 
-#define MAX_PKT_SIZE 65535
-#define IP_HDR_LEN (sizeof(struct IPHeader))
-#define UDP_HDR_LEN (sizeof(struct UDPHeader))
-#define IPPROTO_UDP 17
-
 /* IP and UDP protocol headers, adapted from FreeBSD */
 /*
  * IP header
  */
 /* TODO: Do we really need to consider byte order? */
-struct IPHeader {
+typedef struct {
 #if BYTE_ORDER == LITTLE_ENDIAN
     UBYTE  ip_hl:4,        /* header length */
            ip_v:4;         /* version */
@@ -34,17 +48,17 @@ struct IPHeader {
     USHORT ip_sum;         /* checksum */
     UBYTE  ip_src[4];      /* source address */
     UBYTE  ip_dst[4];      /* destination address */
-};
+} IPHeader;
 
 /*
  * UDP header
  */
-struct UDPHeader {
+typedef struct {
     USHORT uh_sport;       /* source port */
     USHORT uh_dport;       /* destination port */
     USHORT uh_ulen;        /* datagram length */
     USHORT uh_sum;         /* UDP checksum */
-};
+} UDPHeader;
 
 /*
  * TFTP
@@ -69,3 +83,33 @@ struct UDPHeader {
 
 #define TFTP_MAX_DATA_SIZE 512
 #define TFTP_MAX_BLK_NUM 65535
+
+#define MAX_BUFFER_SIZE 1024
+#define IP_HDR_LEN (sizeof(IPHeader))
+#define UDP_HDR_LEN (sizeof(UDPHeader))
+#define IPPROTO_UDP 17
+
+
+/* TODO: move macros / constants used by several modules to another header */
+#define C_TO_BCPL_PTR(ptr) ((BPTR) (((ULONG) (ptr)) >> 2))
+#define BCPL_TO_C_PTR(ptr) ((APTR) (((ULONG) (ptr)) << 2))
+
+
+extern struct MsgPort *logport;
+extern BPTR logfh;
+extern char logmsg[256];
+
+
+/*
+ * function prototypes
+ */
+void log(const char *msg);
+#define LOG(fmt, ...) {sprintf(logmsg, fmt, ##__VA_ARGS__); log(logmsg);}
+void dump_packet(const UBYTE *buffer, ULONG length);
+Buffer *create_buffer(ULONG size);
+void delete_buffer(const Buffer *buffer);
+LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname);
+LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *bytes, LONG nbytes);
+LONG recv_tftp_packet(struct IOExtSer *req, Buffer *pkt);
+USHORT get_opcode(const Buffer *pkt);
+USHORT get_blknum(const Buffer *pkt);
