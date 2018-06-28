@@ -221,7 +221,7 @@ void entry()
                                         ++blknum;
                                     }
                                     else {
-                                        LOG("ERROR: ACK with unexpected block number %d received - terminating\n", get_blknum(tftppkt));
+                                        LOG("ERROR: ACK with unexpected block number %ld received - terminating\n", (ULONG) get_blknum(tftppkt));
                                         return_dos_packet(dospkt, DOSFALSE, 999);
                                         error = 1;
                                     }

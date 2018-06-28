@@ -78,12 +78,16 @@ void dump_buffer(const Buffer *buffer)
     ULONG pos = 0, i, nchars;
     char line[256], *p;
 
+    /* For some reason, we have to use the 'l' modifier for all integers in sprintf(),
+     * otherwise only zeros instead of the real values are printed. Maybe this is
+     * because sprintf() from amiga.lib defaults to 16-bit integers, but GCC always uses
+     * 32-bit integers? Anyway, it works now... */
     while (pos < buffer->b_size) {
         LOG("DEBUG: %04lx: ", pos);
         for (i = pos, p = line, nchars = 0; (i < pos + 16) && (i < buffer->b_size); ++i, ++p, ++nchars) {
-            LOG("%02x ", buffer->b_addr[i]);
+            LOG("%02lx ", (ULONG) buffer->b_addr[i]);
             if (buffer->b_addr[i] >= 0x20 && buffer->b_addr[i] <= 0x7e) {
-                sprintf(p, "%c", buffer->b_addr[i]);
+                sprintf(p, "%lc", buffer->b_addr[i]);
             }
             else {
                 sprintf(p, ".");
@@ -94,6 +98,7 @@ void dump_buffer(const Buffer *buffer)
                 sprintf(p, " ");
             }
         }
+        *p = '\0';
 
         LOG("\t%s\n", line);
         pos += 16;
