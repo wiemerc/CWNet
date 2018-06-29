@@ -253,7 +253,7 @@ static Buffer *create_slip_frame(const Buffer *data)
 
 static BYTE send_slip_frame(struct IOExtSer *req, const Buffer *frame)
 {
-    req->io_SerFlags      = 0;
+    req->io_SerFlags     &= ~SERF_EOFMODE;      /* clear EOF mode */
     req->IOSer.io_Command = CMD_WRITE;
     req->IOSer.io_Length  = frame->b_size;
     req->IOSer.io_Data    = (APTR) frame->b_addr;
@@ -265,15 +265,15 @@ static BYTE recv_slip_frame(struct IOExtSer *req, Buffer *frame)
 {
     BYTE error;
 
-    req->io_SerFlags     |= SERF_EOFMODE;
+    req->io_SerFlags     |= SERF_EOFMODE;       /* set EOF mode */
     req->IOSer.io_Command = CMD_READ;
     req->IOSer.io_Length  = MAX_BUFFER_SIZE;
     req->IOSer.io_Data    = (APTR) frame->b_addr;
     error = DoIO((struct IORequest *) req);
     if (error == 0)
         frame->b_size = req->IOSer.io_Actual;
-    LOG("DEBUG: dump of received SLIP frame:\n");
-    dump_buffer(frame);
+//    LOG("DEBUG: dump of received SLIP frame (%ld bytes):\n", frame->b_size);
+//    dump_buffer(frame);
     return error;
 }
 

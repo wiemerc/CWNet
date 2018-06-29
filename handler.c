@@ -13,7 +13,6 @@
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
-#include <exec/alerts.h>
 #include <exec/io.h>
 #include <exec/memory.h>
 #include <exec/types.h>
@@ -104,7 +103,6 @@ void entry()
      * before these calls have finished, which would result in undefined behaviour. 
      * However, as we are started when the mount command is issued, this is unlikely.
      */
-//    Alert(AT_DeadEnd | AN_Unknown | AG_BadParm | AO_Unknown);
     if ((logport = CreateMsgPort()) == NULL)
         goto ENOPORT;
     if ((logfh = Open("CON:0/0/800/200/CWNET Console", MODE_NEWFILE)) == 0)
@@ -118,8 +116,10 @@ void entry()
         goto ENODEV;
     }
 
-    /* configure device to terminate read requests on SLIP end-of-frame-markers */
-    /* TODO: What about other flags? Flow control? */
+    /* configure device to terminate read requests on SLIP end-of-frame-markers and disable flow control */
+//    req->io_SerFlags     |= SERF_XDISABLED | SERF_RAD_BOOGIE;
+    req->io_SerFlags     |= SERF_XDISABLED;
+//    req->io_Baud          = 292000l;
     req->IOSer.io_Command = SDCMD_SETPARAMS;
     memset(&req->io_TermArray, SLIP_END, 8);
     if (DoIO((struct IORequest *) req) != 0) {
