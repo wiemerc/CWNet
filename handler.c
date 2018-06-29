@@ -164,11 +164,17 @@ void entry()
                     if (send_tftp_req_packet(req, OP_WRQ, p) == 0) {
                         LOG("DEBUG: sent write request to server\n");
                         if (recv_tftp_packet(req, tftppkt) == 0) {
-                            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
-                            dump_buffer(tftppkt);
+//                            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
+//                            dump_buffer(tftppkt);
                             switch (get_opcode(tftppkt)) {
                                 case OP_ACK:
                                     LOG("DEBUG: OP_ACK received from server\n");
+                                    /* We need to reset the block number once *per file* here,
+                                     * and not for every ACTION_WRITE packet, otherwise the last
+                                     * packet of a buffer doesn't get saved by the server because
+                                     * the block number would be reset to 1 in the middle of a
+                                     * transfer and the server would assume a duplicate packet. */
+                                    blknum = 1;
                                     return_dos_packet(dospkt, DOSTRUE, 0);
                                     break;
                                 case OP_ERROR:
@@ -204,14 +210,13 @@ void entry()
                 LOG("DEBUG: buffer size = %ld\n", dospkt->dp_Arg3);
                 bytes          = (APTR) dospkt->dp_Arg2;
                 nbytes_to_send = dospkt->dp_Arg3;
-                blknum         = 1;
                 error          = 0;
                 while (nbytes_to_send > 0 && !error) {
                     if (send_tftp_data_packet(req, blknum, bytes, nbytes_to_send) == 0) {
                         LOG("DEBUG: sent data packet #%ld to server\n", blknum);
                         if (recv_tftp_packet(req, tftppkt) == 0) {
-                            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
-                            dump_buffer(tftppkt);
+//                            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
+//                            dump_buffer(tftppkt);
                             switch (get_opcode(tftppkt)) {
                                 case OP_ACK:
                                     if (get_blknum(tftppkt) == blknum) {
