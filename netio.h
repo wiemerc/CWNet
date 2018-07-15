@@ -69,6 +69,9 @@ typedef struct {
 /*
  * TFTP
  */
+#define TFTP_MAX_DATA_SIZE 512
+#define TFTP_MAX_BLK_NUM 65535
+
 /* packet types */
 #define    OP_RRQ    1            /* read request */
 #define    OP_WRQ    2            /* write request */
@@ -87,8 +90,22 @@ typedef struct {
 #define    ENOUSER     7        /* no such user */
 #define    EOPTNEG     8        /* option negotiation failed */
 
-#define TFTP_MAX_DATA_SIZE 512
-#define TFTP_MAX_BLK_NUM 65535
+/* states */
+#define S_IDLE         0
+#define S_WRQ_SENT     1
+#define S_WRQ_ACKED    2
+#define S_DATA_SENT    3
+#define S_DATA_ACKED   4
+#define S_ERROR        5
+#define S_TERMINATED   6
+
+
+/*
+ * custom DOS error codes
+ */
+#define ERROR_TFTP_GENERIC_ERROR    1000
+#define ERROR_TFTP_UNKNOWN_OPCODE   1001
+#define ERROR_TFTP_WRONG_BLOCK_NUM  1002
 
 
 /*
@@ -99,5 +116,9 @@ LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *byt
 LONG recv_tftp_packet(struct IOExtSer *req, Buffer *pkt);
 USHORT get_opcode(const Buffer *pkt);
 USHORT get_blknum(const Buffer *pkt);
+
+
+/* external reference to the global variable holding network IO error codes */
+extern ULONG netio_errno;
 
 #endif /* CWNET_NETIO_H */
