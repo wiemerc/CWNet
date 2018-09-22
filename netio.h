@@ -109,6 +109,17 @@ typedef struct {
 
 
 /*
+ * internal actions
+ */
+#define ACTION_SEND_NEXT_FILE       5000
+#define ACTION_SEND_NEXT_BUFFER     5001
+#define ACTION_CONTINUE_BUFFER      5002
+#define ACTION_FILE_FINISHED        5003
+#define ACTION_FILE_FAILED          5004
+#define ACTION_BUFFER_FINISHED      5005
+
+
+/*
  * function prototypes
  */
 LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname);

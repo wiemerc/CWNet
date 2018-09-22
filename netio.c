@@ -294,6 +294,7 @@ static LONG recv_slip_frame(struct IOExtSer *req, Buffer *frame)
 {
     BYTE error;
 
+    /* TODO: make read command time out */
     req->io_SerFlags     |= SERF_EOFMODE;       /* set EOF mode */
     req->IOSer.io_Command = CMD_READ;
     req->IOSer.io_Length  = MAX_BUFFER_SIZE;
