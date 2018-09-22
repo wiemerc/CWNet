@@ -91,13 +91,13 @@ typedef struct {
 #define    EOPTNEG     8        /* option negotiation failed */
 
 /* states */
-#define S_IDLE         0
-#define S_WRQ_SENT     1
-#define S_WRQ_ACKED    2
-#define S_DATA_SENT    3
-#define S_DATA_ACKED   4
+#define S_QUEUED       0
+#define S_READY        1
+#define S_WRQ_SENT     2
+#define S_RRQ_SENT     3
+#define S_DATA_SENT    4
 #define S_ERROR        5
-#define S_TERMINATED   6
+#define S_FINISHED     6
 
 
 /*

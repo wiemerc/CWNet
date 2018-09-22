@@ -268,7 +268,7 @@ static Buffer *create_slip_frame(const Buffer *data)
 }
 
 
-static LONG send_slip_frame(struct IOExtSer *req, const Buffer *frame)
+static LONG send_slip_frame(struct IOExtSer *req, const Buffer *frame, BOOL async)
 {
     BYTE error;
 
@@ -276,7 +276,12 @@ static LONG send_slip_frame(struct IOExtSer *req, const Buffer *frame)
     req->IOSer.io_Command = CMD_WRITE;
     req->IOSer.io_Length  = frame->b_size;
     req->IOSer.io_Data    = (APTR) frame->b_addr;
-    error = DoIO((struct IORequest *) req);
+    if (async) {
+        SendIO((struct IORequest *) req);
+        error = 0;
+    }
+    else
+        error = DoIO((struct IORequest *) req);
     netio_errno = error;
     if (error == 0)
         return DOSTRUE;
@@ -309,7 +314,7 @@ static LONG recv_slip_frame(struct IOExtSer *req, Buffer *frame)
 /*
  * TFTP routines
  */
-static LONG send_tftp_packet(struct IOExtSer *req, Buffer *pkt)
+static LONG send_tftp_packet(struct IOExtSer *req, Buffer *pkt, BOOL async)
 {
     Buffer *curbuf, *prevbuf;
 
@@ -342,7 +347,7 @@ static LONG send_tftp_packet(struct IOExtSer *req, Buffer *pkt)
         return DOSFALSE;
     }
     delete_buffer(prevbuf);
-    if (send_slip_frame(req, curbuf) == DOSFALSE) {
+    if (send_slip_frame(req, curbuf, async) == DOSFALSE) {
         LOG("ERROR: error occurred while sending SLIP frame: %ld\n", netio_errno);
     }
     delete_buffer(curbuf);
@@ -387,7 +392,7 @@ LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname
     strcpy((char *) pos, "NETASCII");         /* mode */
     pkt->b_size = strlen(fname) + 12;
     
-    return send_tftp_packet(req, pkt);
+    return send_tftp_packet(req, pkt, 1);     /* send asynchronously */
 }
 
 
@@ -414,7 +419,7 @@ LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *byt
     pkt->b_size = nbytes + 4;
     LOG("DEBUG: size of TFTP packet = %ld\n", pkt->b_size);
 
-    return send_tftp_packet(req, pkt);
+    return send_tftp_packet(req, pkt, 1);     /* send asynchronously */
 }
 
 
