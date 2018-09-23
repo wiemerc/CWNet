@@ -117,6 +117,7 @@ typedef struct {
 #define ACTION_FILE_FINISHED        5003
 #define ACTION_FILE_FAILED          5004
 #define ACTION_BUFFER_FINISHED      5005
+#define ACTION_IO_COMPLETED         5006
 
 
 /*

@@ -112,7 +112,7 @@ void entry()
     struct MsgPort          *port = &(proc->pr_MsgPort);
     struct DeviceNode       *dnode;
     struct Message          *msg;
-    struct DosPacket        *inpkt;
+    struct DosPacket        *inpkt, iopkt;
     struct StandardPacket    outpkt;
     struct IOExtSer         *req;
     struct FileHandle       *fh;
@@ -146,9 +146,11 @@ void entry()
     if ((logport = CreateMsgPort()) == NULL)
         goto ENOPORT;
     if ((logfh = Open("CON:0/0/800/200/CWNET Console", MODE_NEWFILE)) == 0)
+//    if ((logfh = Open("WORK:cwnet.log", MODE_NEWFILE)) == 0)
         goto ENOLOG;
 
-    /* initialize serial device */
+    /* initialize serial device and add DOS packet to IO request so that IO completion
+     * messages can be handled as internal packets */
     if ((req = (struct IOExtSer *) CreateExtIO(port, sizeof(struct IOExtSer))) == NULL) {
         LOG("CRITICAL: could not create request for serial device\n");
         goto ENOREQ;
@@ -157,6 +159,8 @@ void entry()
         LOG("CRITICAL: could not open serial device\n");
         goto ENODEV;
     }
+    iopkt.dp_Type = ACTION_IO_COMPLETED;
+    req->IOSer.io_Message.mn_Node.ln_Name = (char *) &iopkt;
 
     /* configure device to terminate read requests on SLIP end-of-frame-markers and disable flow control */
     /* TODO: configure device for maximum speed */
@@ -190,8 +194,7 @@ void entry()
     /* TODO: reverse conditions to get rid of nested ifs */
     /*
      * main message loop
-     * We receive and handle 3 types of messages here:
-     * - IO completion messages from the serial device
+     * We receive and handle 2 types of messages here:
      * - DOS packets coming from the OS
      * - internal DOS packets sent by ourselves for certain events
      *
@@ -205,278 +208,159 @@ void entry()
      */
     while(running) {
         WaitPort(port);
-        msg = GetMsg(port);
+        msg   = GetMsg(port);
+        inpkt = (struct DosPacket *) msg->mn_Node.ln_Name;
+        LOG("DEBUG: received DOS packet of type %ld\n", inpkt->dp_Type);
 
-        /*
-         * replay message from serial device
-         */
-        /* TODO: attach DOS packet with a fixed action to message from serial device and handle it as internal packet */
-        if (msg == &(req->IOSer.io_Message)) {
-            LOG("DEBUG: received IO completion message\n");
-            /* must be a reply message for a write command, but we better check anyway... */
-            if (!CheckIO((struct IORequest *) req)) {
-                LOG("CRITICAL: IO operation has not completed although IO completion message was received\n");
-                busy = 0;
-                running = 0;
-            }
-                
-            ftx = (FileTransfer *) req->IOSer.io_Message.mn_Node.ln_Name;
-            fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
+        switch (inpkt->dp_Type) {
+            /*
+             * regular actions
+             */
+            case ACTION_IS_FILESYSTEM:
+                LOG("INFO: packet type = ACTION_IS_FILESYSTEM\n");
+                return_dos_packet(inpkt, DOSFALSE, 0);
+                break;
 
-            /* get status of write command */
-            if (WaitIO((struct IORequest *) req) != 0) {
-                LOG("ERROR: sending write request / data to server failed with error %ld\n", req->IOSer.io_Error);
-                ftx->ftx_state = S_ERROR;
-                ftx->ftx_error = req->IOSer.io_Error;
-                busy = 0;
-                send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-            }
 
-            /* read and handle answer from server */
-            /* TODO: answer from server seems to get lost sometimes */
-            LOG("DEBUG: reading answer from server\n");
-            if (recv_tftp_packet(req, tftppkt) == DOSFALSE) {
-                LOG("ERROR: reading answer from server failed\n");
-                ftx->ftx_state = S_ERROR;
-                ftx->ftx_error = netio_errno;
-                busy = 0;
-                send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-            }
-//            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
-//            dump_buffer(tftppkt);
-            switch (get_opcode(tftppkt)) {
-                case OP_ACK:
-                    if (ftx->ftx_state == S_WRQ_SENT) {
-                        LOG("DEBUG: ACK received for sent write request\n");
-                        send_internal_packet(&outpkt, ACTION_SEND_NEXT_BUFFER, ftx);
-                    }
-                    else if (ftx->ftx_state == S_DATA_SENT) {
-                        if (get_blknum(tftppkt) == ftx->ftx_blknum) {
-                            LOG("DEBUG: ACK received for sent data packet\n");
-                            fbuf->fb_nbytes_to_send -= TFTP_MAX_DATA_SIZE;
-                            if (fbuf->fb_nbytes_to_send > 0) {
-                                send_internal_packet(&outpkt, ACTION_CONTINUE_BUFFER, ftx);
-                                LOG("DEBUG: sending next data packet to server\n");
-                            }
-                            else {
-                                LOG("DEBUG: buffer completely transfered to server\n");
-                                send_internal_packet(&outpkt, ACTION_BUFFER_FINISHED, ftx);
-                            }
-                        }
-                        else {
-                            LOG("ERROR: ACK with unexpected block number %ld received - terminating\n", (ULONG) get_blknum(tftppkt));
-                            ftx->ftx_state = S_ERROR;
-                            ftx->ftx_error = ERROR_TFTP_WRONG_BLOCK_NUM;
-                            busy = 0;
-                            send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-                        }
-                    }
-                    else {
-                        LOG("CRITICAL: file transfer is in wrong state %ld\n", ftx->ftx_state);
-                        busy = 0;
-                        running = 0;
-                    }
-                    break;
+            case ACTION_FINDOUTPUT:
+                LOG("INFO: packet type = ACTION_FINDOUTPUT\n");
+                fh = (struct FileHandle *) BCPL_TO_C_PTR(inpkt->dp_Arg1);
+                BCPL_TO_C_STR(fname, inpkt->dp_Arg3);
+                nameptr = fname;
+                nameptr = strrchr(nameptr, ':') + 1;        /* skip device name and colon */
+                ++nameptr; ++nameptr;                       /* skip leading slashes */
+                nameptr = strchr(nameptr, '/') + 1;         /* skip IP address and slash */
+
+                /* initialize FileTransfer structure, queue it and save a pointer in the file handle
+                    * We need to reset the block number once *per file* here, and not for every 
+                    * ACTION_WRITE packet, otherwise the last packet of a buffer doesn't get 
+                    * saved by the server because the block number would be reset to 1 in the 
+                    * middle of a transfer and the server would assume a duplicate packet. */
+                if ((ftx = (FileTransfer *) AllocVec(sizeof(FileTransfer), 0)) != NULL) {
+                    ftx->ftx_state  = S_QUEUED;
+                    ftx->ftx_blknum = 0;    /* will be set to 1 upon sending the first buffer */
+                    ftx->ftx_error  = 0;
+                    strncpy(ftx->ftx_fname, nameptr, 256);
+                    NewList(&(ftx->ftx_buffers));
+                    AddTail(&transfers, (struct Node *) ftx);
+                    fh->fh_Arg1 = (LONG) ftx;
+                    fh->fh_Port = (struct MsgPort *) DOSTRUE;   /* TODO: really necessary? */
                     
-                case OP_ERROR:
-                    LOG("ERROR: OP_ERROR received from server\n");
-                    ftx->ftx_state = S_ERROR;
-                    /* TODO: map TFTP error codes to AmigaDOS or custom error codes */
-                    ftx->ftx_error = ERROR_TFTP_GENERIC_ERROR;
-                    busy = 0;
-                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-                    break;
-                    
-                default:
-                    LOG("ERROR: unknown opcode received from server\n");
-                    ftx->ftx_state = S_ERROR;
-                    ftx->ftx_error = ERROR_TFTP_UNKNOWN_OPCODE;
-                    busy = 0;
-                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-            }
-        }
-        
-        
-        /*
-         * DOS packet
-         */
-        else {
-            inpkt = (struct DosPacket *) msg->mn_Node.ln_Name;
-            LOG("DEBUG: received DOS packet of type %ld\n", inpkt->dp_Type);
-            switch (inpkt->dp_Type) {
-                /*
-                 * regular actions
-                 */
-                case ACTION_IS_FILESYSTEM:
-                    LOG("INFO: packet type = ACTION_IS_FILESYSTEM\n");
-                    return_dos_packet(inpkt, DOSFALSE, 0);
-                    break;
+                    LOG("INFO: added file '%s' to queue\n", ftx->ftx_fname);
+                    return_dos_packet(inpkt, DOSTRUE, 0);
+                }
+                else {
+                    LOG("ERROR: could not allocate memory for FileTransfer structure\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_NO_FREE_STORE);
+                }
+                break;
 
 
-                case ACTION_FINDOUTPUT:
-                    LOG("INFO: packet type = ACTION_FINDOUTPUT\n");
-                    fh = (struct FileHandle *) BCPL_TO_C_PTR(inpkt->dp_Arg1);
-                    BCPL_TO_C_STR(fname, inpkt->dp_Arg3);
-                    nameptr = fname;
-                    nameptr = strrchr(nameptr, ':') + 1;        /* skip device name and colon */
-                    ++nameptr; ++nameptr;                       /* skip leading slashes */
-                    nameptr = strchr(nameptr, '/') + 1;         /* skip IP address and slash */
-
-                    /* initialize FileTransfer structure, queue it and save a pointer in the file handle
-                     * We need to reset the block number once *per file* here, and not for every 
-                     * ACTION_WRITE packet, otherwise the last packet of a buffer doesn't get 
-                     * saved by the server because the block number would be reset to 1 in the 
-                     * middle of a transfer and the server would assume a duplicate packet. */
-                    if ((ftx = (FileTransfer *) AllocVec(sizeof(FileTransfer), 0)) != NULL) {
-                        ftx->ftx_state  = S_QUEUED;
-                        ftx->ftx_blknum = 0;    /* will be set to 1 upon sending the first buffer */
-                        ftx->ftx_error  = 0;
-                        strncpy(ftx->ftx_fname, nameptr, 256);
-                        NewList(&(ftx->ftx_buffers));
-                        AddTail(&transfers, (struct Node *) ftx);
-                        fh->fh_Arg1 = (LONG) ftx;
-                        fh->fh_Port = (struct MsgPort *) DOSTRUE;   /* TODO: really necessary? */
+            case ACTION_WRITE:
+                LOG("INFO: packet type = ACTION_WRITE\n");
+//                LOG("DEBUG: buffer size = %ld\n", inpkt->dp_Arg3);
+                ftx = (FileTransfer *) inpkt->dp_Arg1;
+                /* initialize FileBuffer structure and queue it (one buffer for each ACTION_WRITE packet */
+                if ((fbuf = (FileBuffer *) AllocVec(sizeof(FileBuffer), 0)) != NULL) {
+                    /* We need to copy the buffer because we return the packet before the 
+                    * buffer is sent and the client is free to reuse / free the buffer once the
+                    * packet has been returned. */
+                    if ((fbuf->fb_bytes = AllocVec(inpkt->dp_Arg3, 0)) != NULL) {
+                        memcpy(fbuf->fb_bytes, (APTR) inpkt->dp_Arg2, inpkt->dp_Arg3);
+                        fbuf->fb_curpos         = fbuf->fb_bytes;
+                        fbuf->fb_nbytes_to_send = inpkt->dp_Arg3;
+                        AddTail(&(ftx->ftx_buffers), (struct Node *) fbuf);
                         
-                        LOG("INFO: added file '%s' to queue\n", ftx->ftx_fname);
-                        return_dos_packet(inpkt, DOSTRUE, 0);
+                        LOG("INFO: added buffer of file '%s' to queue\n", ftx->ftx_fname);
+                        return_dos_packet(inpkt, inpkt->dp_Arg3, 0);
                     }
                     else {
-                        LOG("ERROR: could not allocate memory for FileTransfer structure\n");
-                        return_dos_packet(inpkt, DOSFALSE, ERROR_NO_FREE_STORE);
-                    }
-                    break;
-
-
-                case ACTION_WRITE:
-                    LOG("INFO: packet type = ACTION_WRITE\n");
-    //                LOG("DEBUG: buffer size = %ld\n", inpkt->dp_Arg3);
-                    ftx = (FileTransfer *) inpkt->dp_Arg1;
-                    /* initialize FileBuffer structure and queue it (one buffer for each ACTION_WRITE packet */
-                    if ((fbuf = (FileBuffer *) AllocVec(sizeof(FileBuffer), 0)) != NULL) {
-                        /* We need to copy the buffer because we return the packet before the 
-                        * buffer is sent and the client is free to reuse / free the buffer once the
-                        * packet has been returned. */
-                        if ((fbuf->fb_bytes = AllocVec(inpkt->dp_Arg3, 0)) != NULL) {
-                            memcpy(fbuf->fb_bytes, (APTR) inpkt->dp_Arg2, inpkt->dp_Arg3);
-                            fbuf->fb_curpos         = fbuf->fb_bytes;
-                            fbuf->fb_nbytes_to_send = inpkt->dp_Arg3;
-                            AddTail(&(ftx->ftx_buffers), (struct Node *) fbuf);
-                            
-                            LOG("INFO: added buffer of file '%s' to queue\n", ftx->ftx_fname);
-                            return_dos_packet(inpkt, inpkt->dp_Arg3, 0);
-                        }
-                        else {
-                            LOG("ERROR: could not allocate memory for data buffer\n");
-                            return_dos_packet(inpkt, DOSFALSE, ERROR_NO_FREE_STORE);
-                            ftx->ftx_state = S_ERROR;
-                            ftx->ftx_error = ERROR_NO_FREE_STORE;
-                            send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-                        }
-                    }
-                    else {
-                        LOG("ERROR: could not allocate memory for FileBuffer structure\n");
+                        LOG("ERROR: could not allocate memory for data buffer\n");
                         return_dos_packet(inpkt, DOSFALSE, ERROR_NO_FREE_STORE);
                         ftx->ftx_state = S_ERROR;
                         ftx->ftx_error = ERROR_NO_FREE_STORE;
                         send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                     }
-                    break;
+                }
+                else {
+                    LOG("ERROR: could not allocate memory for FileBuffer structure\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_NO_FREE_STORE);
+                    ftx->ftx_state = S_ERROR;
+                    ftx->ftx_error = ERROR_NO_FREE_STORE;
+                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                }
+                break;
 
 
-                case ACTION_END:
-                    LOG("INFO: packet type = ACTION_END\n");
-                    ftx = (FileTransfer *) inpkt->dp_Arg1;
-                    LOG("INFO: file '%s' is now ready for transfer\n", ftx->ftx_fname);
-                    return_dos_packet(inpkt, DOSTRUE, 0);
-                    
-                    /* We only inform ourselves now that a file has been added and is ready 
-                     * for transfer in order to prevent a race condition between buffers being
-                     * added and being sent. Otherwise it could happen that we transfer bufffers
-                     * faster than we receive them and would therefore assume the file has been
-                     * transfered completely somewhere in the middle of the file. */
-                    ftx->ftx_state = S_READY;
-                    send_internal_packet(&outpkt, ACTION_SEND_NEXT_FILE, NULL);
-                    break;
+            case ACTION_END:
+                LOG("INFO: packet type = ACTION_END\n");
+                ftx = (FileTransfer *) inpkt->dp_Arg1;
+                LOG("INFO: file '%s' is now ready for transfer\n", ftx->ftx_fname);
+                return_dos_packet(inpkt, DOSTRUE, 0);
+                
+                /* We only inform ourselves now that a file has been added and is ready 
+                    * for transfer in order to prevent a race condition between buffers being
+                    * added and being sent. Otherwise it could happen that we transfer bufffers
+                    * faster than we receive them and would therefore assume the file has been
+                    * transfered completely somewhere in the middle of the file. */
+                ftx->ftx_state = S_READY;
+                send_internal_packet(&outpkt, ACTION_SEND_NEXT_FILE, NULL);
+                break;
 
 
-                /*
-                case ACTION_LOCATE_OBJECT:
-                case ACTION_EXAMINE_OBJECT:
-                case ACTION_EXAMINE_NEXT:
-                case ACTION_DELETE_OBJECT:
+            /*
+            case ACTION_LOCATE_OBJECT:
+            case ACTION_EXAMINE_OBJECT:
+            case ACTION_EXAMINE_NEXT:
+            case ACTION_DELETE_OBJECT:
+            */
+                /* TODO: implement queue handling (list / remove entries) via these actions */
+                break;
+
+
+            case ACTION_DIE:
+                LOG("INFO: packet type = ACTION_DIE\n");
+                LOG("INFO: ACTION_DIE packet received - shutting down\n");
+                /* TODO: abort ongoing IO operations and remove file transfers from list */
+                /* tell DOS not to send us any more packets */
+                dnode->dn_Task = NULL;
+                running = 0;
+                return_dos_packet(inpkt, DOSTRUE, 0);
+                break;
+
+
+            /*
+                * internal actions
                 */
-                    /* TODO: implement queue handling (list / remove entries) via these actions */
-                    break;
-
-
-                case ACTION_DIE:
-                    LOG("INFO: packet type = ACTION_DIE\n");
-                    LOG("INFO: ACTION_DIE packet received - shutting down\n");
-                    /* TODO: abort ongoing IO operations and remove file transfers from list */
-                    /* tell DOS not to send us any more packets */
-                    dnode->dn_Task = NULL;
-                    running = 0;
-                    return_dos_packet(inpkt, DOSTRUE, 0);
-                    break;
-
-
-                /*
-                 * internal actions
-                 */
-                case ACTION_SEND_NEXT_FILE:
-                    LOG("DEBUG: received internal packet of type ACTION_SEND_NEXT_FILE\n");
-                    if (!busy) {
-                        if ((ftx = get_next_file(&transfers))) {
-                            busy = 1;
-                            req->IOSer.io_Message.mn_Node.ln_Name = (char *) ftx;
-                            if (send_tftp_req_packet(req, OP_WRQ, ftx->ftx_fname) == DOSTRUE) {
-                                LOG("DEBUG: sent write request for file '%s' to server\n", ftx->ftx_fname);
-                                ftx->ftx_state = S_WRQ_SENT;
-                            }
-                            else {
-                                LOG("ERROR: sending write request for file '%s' to server failed\n", ftx->ftx_fname);
-                                ftx->ftx_state = S_ERROR;
-                                ftx->ftx_error = netio_errno;
-                                busy = 0;
-                                send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-                            }
-                        }
-                    }
-                    break;
-
-
-                case ACTION_SEND_NEXT_BUFFER:
-                    LOG("DEBUG: received internal packet of type ACTION_SEND_NEXT_BUFFER\n");
-                    ftx  = (FileTransfer *) inpkt->dp_Arg1;
-                    if (!IsListEmpty(&(ftx->ftx_buffers))) {
-                        fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
-                        ++ftx->ftx_blknum;
-                        if (send_tftp_data_packet(req, ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
-                            LOG("DEBUG: sent data packet #%ld to server\n", ftx->ftx_blknum);
-                            ftx->ftx_state = S_DATA_SENT;
+            case ACTION_SEND_NEXT_FILE:
+                LOG("DEBUG: received internal packet of type ACTION_SEND_NEXT_FILE\n");
+                if (!busy) {
+                    if ((ftx = get_next_file(&transfers))) {
+                        busy = 1;
+                        /* store pointer to current FileTransfer structure in DOS packet so
+                            * that we can retrieve it in ACTION_IO_COMPLETED below */
+                        iopkt.dp_Arg1 = (LONG) ftx;
+                        if (send_tftp_req_packet(req, OP_WRQ, ftx->ftx_fname) == DOSTRUE) {
+                            LOG("DEBUG: sent write request for file '%s' to server\n", ftx->ftx_fname);
+                            ftx->ftx_state = S_WRQ_SENT;
                         }
                         else {
-                            LOG("ERROR: sending data packet #%ld to server failed\n", ftx->ftx_blknum);
+                            LOG("ERROR: sending write request for file '%s' to server failed\n", ftx->ftx_fname);
                             ftx->ftx_state = S_ERROR;
                             ftx->ftx_error = netio_errno;
                             busy = 0;
                             send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                         }
                     }
-                    else {
-                        LOG("INFO: file has been completely transfered\n");
-                        ftx->ftx_state = S_FINISHED;
-                        busy = 0;
-                        send_internal_packet(&outpkt, ACTION_FILE_FINISHED, ftx);
-                    }
-                    break;
+                }
+                break;
 
 
-                case ACTION_CONTINUE_BUFFER:
-                    LOG("DEBUG: received internal packet of type ACTION_CONTINUE_BUFFER\n");
-                    ftx  = (FileTransfer *) inpkt->dp_Arg1;
+            case ACTION_SEND_NEXT_BUFFER:
+                LOG("DEBUG: received internal packet of type ACTION_SEND_NEXT_BUFFER\n");
+                ftx  = (FileTransfer *) inpkt->dp_Arg1;
+                if (!IsListEmpty(&(ftx->ftx_buffers))) {
                     fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
-                    fbuf->fb_curpos = ((UBYTE *) fbuf->fb_curpos) + TFTP_MAX_DATA_SIZE;
                     ++ftx->ftx_blknum;
                     if (send_tftp_data_packet(req, ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
                         LOG("DEBUG: sent data packet #%ld to server\n", ftx->ftx_blknum);
@@ -489,39 +373,151 @@ void entry()
                         busy = 0;
                         send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                     }
-                    break;
+                }
+                else {
+                    LOG("INFO: file has been completely transfered\n");
+                    ftx->ftx_state = S_FINISHED;
+                    busy = 0;
+                    send_internal_packet(&outpkt, ACTION_FILE_FINISHED, ftx);
+                }
+                break;
 
 
-                case ACTION_FILE_FINISHED:
-                case ACTION_FILE_FAILED:
-                    LOG("DEBUG: received internal packet of type ACTION_FILE_FINISHED / ACTION_FILE_FAILED\n");
-                    ftx = (FileTransfer *) inpkt->dp_Arg1;
-                    /* list of buffers is empty in case of a finished file (buffers have
-                     * already been freed one by one), so the loop will be skipped */
-                    while ((fbuf = (FileBuffer *) RemHead(&(ftx->ftx_buffers)))) {
-                        FreeVec(fbuf->fb_bytes);
-                        FreeVec(fbuf);
-                    }
-                    send_internal_packet(&outpkt, ACTION_SEND_NEXT_FILE, NULL);
-                    break;
+            case ACTION_CONTINUE_BUFFER:
+                LOG("DEBUG: received internal packet of type ACTION_CONTINUE_BUFFER\n");
+                ftx  = (FileTransfer *) inpkt->dp_Arg1;
+                fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
+                fbuf->fb_curpos = ((UBYTE *) fbuf->fb_curpos) + TFTP_MAX_DATA_SIZE;
+                ++ftx->ftx_blknum;
+                if (send_tftp_data_packet(req, ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
+                    LOG("DEBUG: sent data packet #%ld to server\n", ftx->ftx_blknum);
+                    ftx->ftx_state = S_DATA_SENT;
+                }
+                else {
+                    LOG("ERROR: sending data packet #%ld to server failed\n", ftx->ftx_blknum);
+                    ftx->ftx_state = S_ERROR;
+                    ftx->ftx_error = netio_errno;
+                    busy = 0;
+                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                }
+                break;
 
 
-                case ACTION_BUFFER_FINISHED:
-                    LOG("DEBUG: received internal packet of type ACTION_BUFFER_FINISHED\n");
-                    ftx  = (FileTransfer *) inpkt->dp_Arg1;
-                    fbuf = (FileBuffer *) RemHead(&(ftx->ftx_buffers));
+            case ACTION_FILE_FINISHED:
+            case ACTION_FILE_FAILED:
+                LOG("DEBUG: received internal packet of type ACTION_FILE_FINISHED / ACTION_FILE_FAILED\n");
+                ftx = (FileTransfer *) inpkt->dp_Arg1;
+                /* list of buffers is empty in case of a finished file (buffers have
+                    * already been freed one by one), so the loop will be skipped */
+                while ((fbuf = (FileBuffer *) RemHead(&(ftx->ftx_buffers)))) {
                     FreeVec(fbuf->fb_bytes);
                     FreeVec(fbuf);
-                    send_internal_packet(&outpkt, ACTION_SEND_NEXT_BUFFER, ftx);
-                    break;
+                }
+                send_internal_packet(&outpkt, ACTION_SEND_NEXT_FILE, NULL);
+                break;
 
 
-                default:
-                    LOG("ERROR: packet type is unknown\n");
-                    return_dos_packet(inpkt, DOSFALSE, ERROR_ACTION_NOT_KNOWN);
-            }
-        }
-    }
+            case ACTION_BUFFER_FINISHED:
+                LOG("DEBUG: received internal packet of type ACTION_BUFFER_FINISHED\n");
+                ftx  = (FileTransfer *) inpkt->dp_Arg1;
+                fbuf = (FileBuffer *) RemHead(&(ftx->ftx_buffers));
+                FreeVec(fbuf->fb_bytes);
+                FreeVec(fbuf);
+                send_internal_packet(&outpkt, ACTION_SEND_NEXT_BUFFER, ftx);
+                break;
+
+
+            case ACTION_IO_COMPLETED:
+                LOG("DEBUG: received internal packet of type ACTION_IO_COMPLETED (IO completion message)\n");
+                /* must be a reply message for a write command, but we better check anyway... */
+                if (!CheckIO((struct IORequest *) req)) {
+                    LOG("CRITICAL: IO operation has not completed although IO completion message was received\n");
+                    busy = 0;
+                    running = 0;
+                }
+                    
+                ftx = (FileTransfer *) inpkt->dp_Arg1;
+                fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
+
+                /* get status of write command */
+                if (WaitIO((struct IORequest *) req) != 0) {
+                    LOG("ERROR: sending write request / data to server failed with error %ld\n", req->IOSer.io_Error);
+                    ftx->ftx_state = S_ERROR;
+                    ftx->ftx_error = req->IOSer.io_Error;
+                    busy = 0;
+                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                }
+
+                /* read and handle answer from server */
+                /* TODO: answer from server seems to get lost sometimes */
+                LOG("DEBUG: reading answer from server\n");
+                if (recv_tftp_packet(req, tftppkt) == DOSFALSE) {
+                    LOG("ERROR: reading answer from server failed\n");
+                    ftx->ftx_state = S_ERROR;
+                    ftx->ftx_error = netio_errno;
+                    busy = 0;
+                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                }
+    //            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
+    //            dump_buffer(tftppkt);
+                switch (get_opcode(tftppkt)) {
+                    case OP_ACK:
+                        if (ftx->ftx_state == S_WRQ_SENT) {
+                            LOG("DEBUG: ACK received for sent write request\n");
+                            send_internal_packet(&outpkt, ACTION_SEND_NEXT_BUFFER, ftx);
+                        }
+                        else if (ftx->ftx_state == S_DATA_SENT) {
+                            if (get_blknum(tftppkt) == ftx->ftx_blknum) {
+                                LOG("DEBUG: ACK received for sent data packet\n");
+                                fbuf->fb_nbytes_to_send -= TFTP_MAX_DATA_SIZE;
+                                if (fbuf->fb_nbytes_to_send > 0) {
+                                    send_internal_packet(&outpkt, ACTION_CONTINUE_BUFFER, ftx);
+                                    LOG("DEBUG: sending next data packet to server\n");
+                                }
+                                else {
+                                    LOG("DEBUG: buffer has been completely transfered\n");
+                                    send_internal_packet(&outpkt, ACTION_BUFFER_FINISHED, ftx);
+                                }
+                            }
+                            else {
+                                LOG("ERROR: ACK with unexpected block number %ld received - terminating\n", (ULONG) get_blknum(tftppkt));
+                                ftx->ftx_state = S_ERROR;
+                                ftx->ftx_error = ERROR_TFTP_WRONG_BLOCK_NUM;
+                                busy = 0;
+                                send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                            }
+                        }
+                        else {
+                            LOG("CRITICAL: file transfer is in wrong state %ld\n", ftx->ftx_state);
+                            busy = 0;
+                            running = 0;
+                        }
+                        break;
+
+                    case OP_ERROR:
+                        LOG("ERROR: OP_ERROR received from server\n");
+                        ftx->ftx_state = S_ERROR;
+                        /* TODO: map TFTP error codes to AmigaDOS or custom error codes */
+                        ftx->ftx_error = ERROR_TFTP_GENERIC_ERROR;
+                        busy = 0;
+                        send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                        break;
+
+                    default:
+                        LOG("ERROR: unknown opcode received from server\n");
+                        ftx->ftx_state = S_ERROR;
+                        ftx->ftx_error = ERROR_TFTP_UNKNOWN_OPCODE;
+                        busy = 0;
+                        send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                }
+                break;
+
+
+            default:
+                LOG("ERROR: packet type is unknown\n");
+                return_dos_packet(inpkt, DOSFALSE, ERROR_ACTION_NOT_KNOWN);
+        }   /* end switch */
+    }   /* end while */
 
 
     Delay(150);
