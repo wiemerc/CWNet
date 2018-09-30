@@ -125,10 +125,18 @@ static FileTransfer *get_next_file_from_queue(const struct List *transfers)
 static FileTransfer *find_file_in_queue(const struct List *transfers, const char *fname)
 {
     FileTransfer *ftx = (FileTransfer *) transfers->lh_Head;
+    const char   *nameptr;
 
     if (IsListEmpty(transfers))
         return NULL;
-    while (ftx && (strncmp(ftx->ftx_fname, fname, 256) != 0))
+
+    /* search for name *without* the device name in list,
+     * only the first 30 characters are compared */
+    if (strrchr(fname, ':'))
+        nameptr = strrchr(fname, ':') + 1;
+    else
+        nameptr = fname;
+    while (ftx && (strncmp(ftx->ftx_fname, nameptr, 30) != 0))
         ftx = (FileTransfer *) ftx->ftx_node.ln_Succ;
     return ftx;
 }
