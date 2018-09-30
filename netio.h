@@ -12,6 +12,7 @@
  * included files
  */
 #include <devices/serial.h>
+#include <dos/dos.h>
 #include <dos/dosasl.h>
 #include <exec/io.h>
 #include <exec/types.h>

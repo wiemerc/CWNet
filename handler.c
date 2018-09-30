@@ -47,6 +47,20 @@ typedef struct
 
 
 /*
+ * file lock that can be put into a list
+ * The FileLock structure already contains a field fl_Link that we could use for chaining
+ * locks together, but the advantage of the structure below is that we can use the
+ * standard list management functions like AddTail(), RemTail(), Remove() and so on.
+ */
+typedef struct
+{
+    struct Node     ll_node;
+    UWORD           ll_dummy;   /* to keep the FileLock structure longword-aligned */
+    struct FileLock ll_flock;
+} LinkedLock;
+
+
+/*
  * The declaration below is a workaround for a bug in GCC which causes it to create a
  * corrupt executable (additional null word at the end of HUNK_DATA) if there are no
  * relocations for the data block. By referencing a string constant, which is placed at
@@ -91,14 +105,47 @@ static void return_dos_packet(struct DosPacket *pkt, LONG res1, LONG res2)
 
 
 /*
- * get_next_file - get next file from queue that is ready for transfer (or NULL)
+ * get_next_file_from_queue - get next file from queue that is ready for transfer (or NULL)
  */
-static FileTransfer *get_next_file(const struct List *transfers)
+static FileTransfer *get_next_file_from_queue(const struct List *transfers)
 {
     FileTransfer *ftx = (FileTransfer *) transfers->lh_Head;
+
+    if (IsListEmpty(transfers))
+        return NULL;
     while (ftx && (ftx->ftx_state != S_READY))
         ftx = (FileTransfer *) ftx->ftx_node.ln_Succ;
     return ftx;
+}
+
+
+/*
+ * find_file_in_queue - find file in queue with the given name
+ */
+static FileTransfer *find_file_in_queue(const struct List *transfers, const char *fname)
+{
+    FileTransfer *ftx = (FileTransfer *) transfers->lh_Head;
+
+    if (IsListEmpty(transfers))
+        return NULL;
+    while (ftx && (strncmp(ftx->ftx_fname, fname, 256) != 0))
+        ftx = (FileTransfer *) ftx->ftx_node.ln_Succ;
+    return ftx;
+}
+
+
+/*
+ * find_lock_in_list - find a lock in the list
+ */
+static LinkedLock *find_lock_in_list(const struct List *locks, const struct FileLock *flock)
+{
+    LinkedLock *llock = (LinkedLock *) locks->lh_Head;
+
+    if (IsListEmpty(locks))
+        return NULL;
+    while (llock && (&(llock->ll_flock) != flock))
+        llock = (LinkedLock *) llock->ll_node.ln_Succ;
+    return llock;
 }
 
 
@@ -115,10 +162,14 @@ void entry()
     struct DosPacket        *inpkt, iopkt;
     struct StandardPacket    outpkt;
     struct IOExtSer         *req;
+    LinkedLock              *llock;
+    struct FileLock         *flock;
     struct FileHandle       *fh;
-    FileTransfer            *ftx;
+    struct FileInfoBlock    *fib;
+    FileTransfer            *ftx, dummy;
     FileBuffer              *fbuf;
     struct List              transfers;
+    struct List              locks;
     Buffer                  *tftppkt;
     ULONG                    running = 1, busy = 0;
     char                     fname[256], *nameptr;
@@ -180,8 +231,9 @@ void entry()
         goto ENOMEM;
     }
 
-    /* initialize list of file transfers */
+    /* initialize lists of file transfers and locks */
     NewList(&transfers);
+    NewList(&locks);
     LOG("INFO: initialization complete - waiting for requests\n");
     
     /* initialize internal DOS packet */
@@ -190,6 +242,13 @@ void entry()
     outpkt.sp_Msg.mn_Node.ln_Name = (char *) &(outpkt.sp_Pkt);
     outpkt.sp_Pkt.dp_Link         = &(outpkt.sp_Msg);
 
+    /*
+    dummy.ftx_state = S_QUEUED;
+    dummy.ftx_error = 0;
+    dummy.ftx_node.ln_Succ = NULL;
+    strncpy(dummy.ftx_fname, "xxx", 256);
+    AddTail(&transfers, (struct Node *) &dummy);
+    */
 
     /* TODO: reverse conditions to get rid of nested ifs */
     /*
@@ -218,7 +277,7 @@ void entry()
              */
             case ACTION_IS_FILESYSTEM:
                 LOG("INFO: packet type = ACTION_IS_FILESYSTEM\n");
-                return_dos_packet(inpkt, DOSFALSE, 0);
+                return_dos_packet(inpkt, DOSTRUE, 0);
                 break;
 
 
@@ -236,7 +295,7 @@ void entry()
                     * ACTION_WRITE packet, otherwise the last packet of a buffer doesn't get 
                     * saved by the server because the block number would be reset to 1 in the 
                     * middle of a transfer and the server would assume a duplicate packet. */
-                if ((ftx = (FileTransfer *) AllocVec(sizeof(FileTransfer), 0)) != NULL) {
+                if ((ftx = (FileTransfer *) AllocVec(sizeof(FileTransfer), MEMF_CLEAR)) != NULL) {
                     ftx->ftx_state  = S_QUEUED;
                     ftx->ftx_blknum = 0;    /* will be set to 1 upon sending the first buffer */
                     ftx->ftx_error  = 0;
@@ -258,14 +317,13 @@ void entry()
 
             case ACTION_WRITE:
                 LOG("INFO: packet type = ACTION_WRITE\n");
-//                LOG("DEBUG: buffer size = %ld\n", inpkt->dp_Arg3);
                 ftx = (FileTransfer *) inpkt->dp_Arg1;
                 /* initialize FileBuffer structure and queue it (one buffer for each ACTION_WRITE packet */
-                if ((fbuf = (FileBuffer *) AllocVec(sizeof(FileBuffer), 0)) != NULL) {
+                if ((fbuf = (FileBuffer *) AllocVec(sizeof(FileBuffer), MEMF_CLEAR)) != NULL) {
                     /* We need to copy the buffer because we return the packet before the 
                     * buffer is sent and the client is free to reuse / free the buffer once the
                     * packet has been returned. */
-                    if ((fbuf->fb_bytes = AllocVec(inpkt->dp_Arg3, 0)) != NULL) {
+                    if ((fbuf->fb_bytes = AllocVec(inpkt->dp_Arg3, MEMF_CLEAR)) != NULL) {
                         memcpy(fbuf->fb_bytes, (APTR) inpkt->dp_Arg2, inpkt->dp_Arg3);
                         fbuf->fb_curpos         = fbuf->fb_bytes;
                         fbuf->fb_nbytes_to_send = inpkt->dp_Arg3;
@@ -308,20 +366,173 @@ void entry()
                 break;
 
 
-            /*
             case ACTION_LOCATE_OBJECT:
+                LOG("INFO: packet type = ACTION_LOCATE_OBJECT\n");
+                BCPL_TO_C_STR(fname, inpkt->dp_Arg2);
+                LOG("DEBUG: lock = 0x%08lx, name = %s, mode = %ld\n", inpkt->dp_Arg1, fname, inpkt->dp_Arg3);
+
+                /* initialize FileLock structure */
+                if ((llock = (LinkedLock *) AllocVec(sizeof(LinkedLock), MEMF_CLEAR)) != NULL) {
+                    flock = &(llock->ll_flock);
+                    flock->fl_Link = 0;
+                    flock->fl_Access = inpkt->dp_Arg3;
+                    flock->fl_Task   = port;
+                    /* not completely correct since NET: is a device and not a volume (the structure 
+                    * pointed to by dnode contains a dol_handler and not a dol_volume entry) */
+                    flock->fl_Volume = C_TO_BCPL_PTR(dnode);
+                }
+                else {
+                    LOG("ERROR: could not allocate memory for LinkedLock structure\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_NO_FREE_STORE);
+                    break;
+                }
+
+                /* handle the different combinations of the lock and name arguments */
+                if (inpkt->dp_Arg1 == 0) {
+                    /* name is absolute */
+                    if (strstr(fname, "//")) {
+                        /* name is a full URL => lock is being requested for a file transfer 
+                         * => return error because file does not yet exist */
+                        LOG("DEBUG: lock for file transfer requested\n");
+                        return_dos_packet(inpkt, DOSFALSE, ERROR_OBJECT_NOT_FOUND);
+                    }
+                    else if ((strncmp(fname, "net:", 256) == 0)) {
+                        /* lock is being requested for a queue listing */
+                        LOG("DEBUG: lock for queue listing requested\n");
+                        flock->fl_Key = 0;
+                        return_dos_packet(inpkt, C_TO_BCPL_PTR(flock), 0);
+                        AddTail(&locks, (struct Node *) llock);
+                    }
+                    else {
+                        /* lock is being requested for a single file in the queue */
+                        if ((ftx = find_file_in_queue(&transfers, fname)) != NULL) {
+                            LOG("DEBUG: lock for file '%s' requested\n", fname);
+                            flock->fl_Key = (LONG) ftx;
+                            return_dos_packet(inpkt, C_TO_BCPL_PTR(flock), 0);
+                            AddTail(&locks, (struct Node *) llock);
+                        }
+                        else {
+                            LOG("ERROR: lock for file '%s' requested but file not found in queue\n", fname);
+                            return_dos_packet(inpkt, DOSFALSE,  ERROR_OBJECT_NOT_FOUND);
+                        }
+                    }
+                }
+                else {
+                    /* name is relative to an existing lock => not supported because we don't support directories */
+                    LOG("ERROR: new lock relative to an existing lock requested\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_NOT_IMPLEMENTED);
+                }
+                break;
+
+
+            case ACTION_FREE_LOCK:
+                LOG("INFO: packet type = ACTION_FREE_LOCK\n");
+                flock = BCPL_TO_C_PTR(inpkt->dp_Arg1);
+                LOG("DEBUG: lock = 0x%08lx\n", (ULONG) flock);
+                if (flock == NULL)
+                    return_dos_packet(inpkt, DOSTRUE, 0);
+                else if ((llock = find_lock_in_list(&locks, flock))) {
+                    Remove((struct Node *) llock);
+                    FreeVec(llock);
+                    return_dos_packet(inpkt, DOSTRUE, 0);
+                }
+                else {
+                    LOG("ERROR: unknown lock\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_INVALID_LOCK);
+                }
+                break;
+
+
             case ACTION_EXAMINE_OBJECT:
+                LOG("INFO: packet type = ACTION_EXAMINE_OBJECT\n");
+                flock = BCPL_TO_C_PTR(inpkt->dp_Arg1);
+                LOG("DEBUG: lock = 0x%08lx\n", (ULONG) flock);
+                if (!find_lock_in_list(&locks, flock)) {
+                    LOG("ERROR: unknown lock\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_INVALID_LOCK);
+                    break;
+                }
+
+                fib = (struct FileInfoBlock *) BCPL_TO_C_PTR(inpkt->dp_Arg2);
+                if (flock->fl_Key == 0) {
+                    /* lock refers to root directory => fill FileInfoBlock structure with 
+                    * the values for the root directory, *not* for the first entry in the 
+                    * list of transfers (this happens in the first ACTION_EXAMINE_NEXT packet) */
+                    if (!IsListEmpty(&transfers)) {
+                        LOG("DEBUG: entries to examine\n");
+                        fib->fib_DiskKey      = (LONG) transfers.lh_Head;
+                        fib->fib_DirEntryType = ST_ROOT;
+                        fib->fib_EntryType    = ST_ROOT;
+                        fib->fib_Protection   = FIBF_READ | FIBF_WRITE | FIBF_EXECUTE;
+                        fib->fib_Size         = 0;
+                        fib->fib_FileName[0]  = 0;    /* BCPL string */
+                        fib->fib_Comment[0]   = 0;    /* BCPL string */
+                        return_dos_packet(inpkt, DOSTRUE, 0);
+                    }
+                    else {
+                        LOG("DEBUG: no entries to examine\n");
+                        return_dos_packet(inpkt, DOSFALSE, ERROR_NO_MORE_ENTRIES);
+                    }
+                }
+                else {
+                    /* lock refers to a single file => fill FileInfoBlock structure with 
+                    * the values from the entry in the list of transfers for this file, protection
+                    * bits contain the state and the size contains the error code */
+                    ftx = (FileTransfer *) flock->fl_Key;
+                    fib->fib_DiskKey      = (LONG) ftx;
+                    fib->fib_Protection   = ftx->ftx_state;
+                    fib->fib_Size         = ftx->ftx_error;
+                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname);
+                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, 30);     /* BCPL string */
+                    /* TODO: initialize fib_Date */
+                    return_dos_packet(inpkt, DOSTRUE, 0);
+                }
+                break;
+
+
             case ACTION_EXAMINE_NEXT:
-            case ACTION_DELETE_OBJECT:
-            */
-                /* TODO: implement queue handling (list / remove entries) via these actions */
+                LOG("INFO: packet type = ACTION_EXAMINE_NEXT\n");
+                flock = BCPL_TO_C_PTR(inpkt->dp_Arg1);
+                LOG("DEBUG: lock = 0x%08lx\n", (ULONG) flock);
+                if (!find_lock_in_list(&locks, flock)) {
+                    LOG("ERROR: unknown lock\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_INVALID_LOCK);
+                    break;
+                }
+                if (flock->fl_Key != 0) {
+                    LOG("ERROR: lock does not refer to root directory\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_INVALID_LOCK);
+                    break;
+                }
+
+                /* fill FileInfoBlock structure with the values from the next entry 
+                 * in the list of transfers and return it, protection bits contain the 
+                 * state and the size contains the error code. We assume here that the
+                 * FileInfoBlock passed is the same as in ACTION_EXAMINE_OBJECT. */
+                fib = (struct FileInfoBlock *) BCPL_TO_C_PTR(inpkt->dp_Arg2);
+                ftx = (FileTransfer *) fib->fib_DiskKey;
+                LOG("DEBUG: current transfer = 0x%08lx, next transfer = 0x%08lx\n", ftx, ftx->ftx_node.ln_Succ);
+                if (ftx) {
+                    LOG("DEBUG: still entries to examine\n");
+                    fib->fib_DiskKey      = (LONG) ftx->ftx_node.ln_Succ;
+                    fib->fib_Protection   = ftx->ftx_state;
+                    fib->fib_Size         = ftx->ftx_error;
+                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname);
+                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, 30);     /* BCPL string */
+                    /* TODO: initialize fib_Date */
+                    return_dos_packet(inpkt, DOSTRUE, 0);
+                }
+                else {
+                    LOG("DEBUG: no more entries to examine\n");
+                    return_dos_packet(inpkt, DOSFALSE, ERROR_NO_MORE_ENTRIES);
+                }
                 break;
 
 
             case ACTION_DIE:
                 LOG("INFO: packet type = ACTION_DIE\n");
                 LOG("INFO: ACTION_DIE packet received - shutting down\n");
-                /* TODO: abort ongoing IO operations and remove file transfers from list */
+                /* TODO: abort ongoing IO operations */
                 /* tell DOS not to send us any more packets */
                 dnode->dn_Task = NULL;
                 running = 0;
@@ -335,7 +546,7 @@ void entry()
             case ACTION_SEND_NEXT_FILE:
                 LOG("DEBUG: received internal packet of type ACTION_SEND_NEXT_FILE\n");
                 if (!busy) {
-                    if ((ftx = get_next_file(&transfers))) {
+                    if ((ftx = get_next_file_from_queue(&transfers))) {
                         busy = 1;
                         /* store pointer to current FileTransfer structure in DOS packet so
                             * that we can retrieve it in ACTION_IO_COMPLETED below */
