@@ -3,10 +3,10 @@ CFLAGS  := -Wall
 
 .PHONY: all clean
 
-all: serecho logtest unmount cwnet-handler
+all: serecho logtest unmount listq cwnet-handler
 
 clean:
-	rm -f *.o serecho logtest cwnet-handler
+	rm -f *.o serecho logtest unmount listq cwnet-handler
 
 serecho: serecho.o
 	$(CC) -noixemul -s -o $@ $@.o
@@ -15,6 +15,9 @@ logtest: logtest.o
 	$(CC) -noixemul -s -o $@ $@.o
 
 unmount: unmount.o
+	$(CC) -noixemul -s -o $@ $@.o
+
+listq: listq.o
 	$(CC) -noixemul -s -o $@ $@.o
 
 cwnet-handler: cwcrt0.o handler.o util.o netio.o
