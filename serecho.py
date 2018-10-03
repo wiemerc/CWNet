@@ -5,7 +5,7 @@ import sys
 
 
 s = socket.socket(socket.AF_UNIX)
-s.connect('/Users/consti/vbox/com1')
+s.connect('/Users/consti/var/run/vbox/com1.sock')
 try:
     while True:
         line = sys.stdin.readline()
