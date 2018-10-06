@@ -48,7 +48,6 @@ char *BCPL_TO_C_STR(char *buffer, BSTR str)
 /*
  * create / delete a buffer for packets or payloads
  */
-/* TODO: Do we need to store the capacity? */
 Buffer *create_buffer(ULONG size)
 {
     Buffer *buffer;

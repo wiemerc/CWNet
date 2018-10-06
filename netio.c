@@ -290,7 +290,7 @@ static LONG send_slip_frame(struct IOExtSer *req, const Buffer *frame, BOOL asyn
 }
 
 
-static LONG recv_slip_frame(struct IOExtSer *req, Buffer *frame)
+static LONG recv_slip_frame(struct IOExtSer *req, Buffer *frame, BOOL async)
 {
     BYTE error;
 
@@ -299,16 +299,23 @@ static LONG recv_slip_frame(struct IOExtSer *req, Buffer *frame)
     req->IOSer.io_Command = CMD_READ;
     req->IOSer.io_Length  = MAX_BUFFER_SIZE;
     req->IOSer.io_Data    = (APTR) frame->b_addr;
-    error = DoIO((struct IORequest *) req);
-    netio_errno = error;
-    if (error == 0) {
-//        LOG("DEBUG: dump of received SLIP frame (%ld bytes):\n", frame->b_size);
-//        dump_buffer(frame);
-        frame->b_size = req->IOSer.io_Actual;
+    if (async) {
+        SendIO((struct IORequest *) req);
+        netio_errno = 0;
         return DOSTRUE;
     }
-    else
-        return DOSFALSE;
+    else {
+        error = DoIO((struct IORequest *) req);
+        netio_errno = error;
+        if (error == 0) {
+//            LOG("DEBUG: dump of received SLIP frame (%ld bytes):\n", frame->b_size);
+//            dump_buffer(frame);
+            frame->b_size = req->IOSer.io_Actual;
+            return DOSTRUE;
+        }
+        else
+            return DOSFALSE;
+    }
 }
 
 
@@ -418,28 +425,33 @@ LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *byt
         nbytes = TFTP_MAX_DATA_SIZE;
     memcpy(pos, bytes, nbytes);
     pkt->b_size = nbytes + 4;
-    LOG("DEBUG: size of TFTP packet = %ld\n", pkt->b_size);
 
     return send_tftp_packet(req, pkt, 1);     /* send asynchronously */
 }
 
 
-LONG recv_tftp_packet(struct IOExtSer *req, Buffer *pkt)
+LONG recv_tftp_packet(struct IOExtSer *req)
 {
-    Buffer *curbuf, *prevbuf;
+    Buffer *buf;
 
-    if ((curbuf = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
+    if ((buf = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for SLIP frame\n");
         netio_errno = ERROR_NO_FREE_STORE;
         return DOSFALSE;
     }
-    if (recv_slip_frame(req, curbuf) == DOSFALSE) {
-        LOG("ERROR: error occurred while receiving SLIP frame: %ld\n", netio_errno);
-        /* netio_errno has already been set by recv_slip_frame() */
-        return DOSFALSE;
-    }
+    return recv_slip_frame(req, buf, 1 /* receive asynchronously */);
+}
 
-    prevbuf = curbuf;
+
+LONG extract_tftp_packet(APTR addr, ULONG size, Buffer *pkt)
+{
+    Buffer data, *prevbuf, *curbuf;
+
+    /* We reconstruct the buffer that was allocated in recv_tftp_packet(), addr points to
+     * the data read by the serial device, size is the number of bytes read */
+    data.b_addr = addr;
+    data.b_size = size;
+    prevbuf = &data;
     if ((curbuf = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for IP packet\n");
         netio_errno = ERROR_NO_FREE_STORE;
@@ -450,7 +462,8 @@ LONG recv_tftp_packet(struct IOExtSer *req, Buffer *pkt)
         /* netio_errno has already been set by slip_decode_buffer() */
         return DOSFALSE;
     }
-    delete_buffer(prevbuf);
+    /* We call FreeVec() directly instead of delete_buffer() because of the reconstructed buffer */
+    FreeVec(prevbuf->b_addr - sizeof(Buffer));
     prevbuf = curbuf;
     if ((curbuf = get_data_from_ip_packet(prevbuf)) == NULL) {
         LOG("ERROR: error occurred while extracting data from IP packet\n");

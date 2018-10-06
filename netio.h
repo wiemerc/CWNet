@@ -118,7 +118,7 @@ typedef struct {
 #define ACTION_FILE_FINISHED        5003
 #define ACTION_FILE_FAILED          5004
 #define ACTION_BUFFER_FINISHED      5005
-#define ACTION_IO_COMPLETED         5006
+#define ACTION_TIMER_EXPIRED        5006
 
 
 /*
@@ -126,7 +126,8 @@ typedef struct {
  */
 LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname);
 LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *bytes, LONG nbytes);
-LONG recv_tftp_packet(struct IOExtSer *req, Buffer *pkt);
+LONG recv_tftp_packet(struct IOExtSer *req);
+LONG extract_tftp_packet(APTR addr, ULONG size, Buffer *pkt);
 USHORT get_opcode(const Buffer *pkt);
 USHORT get_blknum(const Buffer *pkt);
 

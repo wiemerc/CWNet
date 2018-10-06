@@ -218,7 +218,6 @@ void entry()
         LOG("CRITICAL: could not open serial device\n");
         goto ENODEV;
     }
-    iopkt.dp_Type = ACTION_IO_COMPLETED;
     req->IOSer.io_Message.mn_Node.ln_Name = (char *) &iopkt;
 
     /* configure device to terminate read requests on SLIP end-of-frame-markers and disable flow control */
@@ -557,7 +556,8 @@ void entry()
                     if ((ftx = get_next_file_from_queue(&transfers))) {
                         busy = 1;
                         /* store pointer to current FileTransfer structure in DOS packet so
-                            * that we can retrieve it in ACTION_IO_COMPLETED below */
+                            * that we can retrieve it in ACTION_WRITE_RETURN below */
+                        iopkt.dp_Type = ACTION_WRITE_RETURN;
                         iopkt.dp_Arg1 = (LONG) ftx;
                         if (send_tftp_req_packet(req, OP_WRQ, ftx->ftx_fname) == DOSTRUE) {
                             LOG("DEBUG: sent write request for file '%s' to server\n", ftx->ftx_fname);
@@ -581,6 +581,7 @@ void entry()
                 if (!IsListEmpty(&(ftx->ftx_buffers))) {
                     fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
                     ++ftx->ftx_blknum;
+                    iopkt.dp_Type = ACTION_WRITE_RETURN;
                     if (send_tftp_data_packet(req, ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
                         LOG("DEBUG: sent data packet #%ld to server\n", ftx->ftx_blknum);
                         ftx->ftx_state = S_DATA_SENT;
@@ -608,6 +609,7 @@ void entry()
                 fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
                 fbuf->fb_curpos = ((UBYTE *) fbuf->fb_curpos) + TFTP_MAX_DATA_SIZE;
                 ++ftx->ftx_blknum;
+                iopkt.dp_Type = ACTION_WRITE_RETURN;
                 if (send_tftp_data_packet(req, ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
                     LOG("DEBUG: sent data packet #%ld to server\n", ftx->ftx_blknum);
                     ftx->ftx_state = S_DATA_SENT;
@@ -646,17 +648,16 @@ void entry()
                 break;
 
 
-            case ACTION_IO_COMPLETED:
-                LOG("DEBUG: received internal packet of type ACTION_IO_COMPLETED (IO completion message)\n");
+            case ACTION_WRITE_RETURN:
+                LOG("DEBUG: received internal packet of type ACTION_WRITE_RETURN (IO completion message)\n");
                 /* must be a reply message for a write command, but we better check anyway... */
                 if (!CheckIO((struct IORequest *) req)) {
-                    LOG("CRITICAL: IO operation has not completed although IO completion message was received\n");
+                    LOG("CRITICAL: IO operation has not been completed although IO completion message was received\n");
                     busy = 0;
                     running = 0;
                 }
                     
                 ftx = (FileTransfer *) inpkt->dp_Arg1;
-                fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
 
                 /* get status of write command */
                 if (WaitIO((struct IORequest *) req) != 0) {
@@ -667,16 +668,49 @@ void entry()
                     send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }
 
-                /* read and handle answer from server */
-                /* TODO: answer from server seems to get lost sometimes */
+                /* read answer from server */
+                /* TODO: answer seems to get lost sometimes */
                 LOG("DEBUG: reading answer from server\n");
-                if (recv_tftp_packet(req, tftppkt) == DOSFALSE) {
-                    LOG("ERROR: reading answer from server failed\n");
+                iopkt.dp_Type = ACTION_READ_RETURN;
+                if (recv_tftp_packet(req) == DOSFALSE) {
+                    LOG("ERROR: reading answer from server failed with error %ld\n", netio_errno);
                     ftx->ftx_state = S_ERROR;
                     ftx->ftx_error = netio_errno;
                     busy = 0;
                     send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }
+                break;
+
+
+            case ACTION_READ_RETURN:
+                LOG("DEBUG: received internal packet of type ACTION_READ_RETURN (IO completion message)\n");
+                /* must be a reply message for a read command, but we better check anyway... */
+                if (!CheckIO((struct IORequest *) req)) {
+                    LOG("CRITICAL: IO operation has not been completed although IO completion message was received\n");
+                    busy = 0;
+                    running = 0;
+                }
+                    
+                ftx = (FileTransfer *) inpkt->dp_Arg1;
+
+                /* get status of read command */
+                if (WaitIO((struct IORequest *) req) != 0) {
+                    LOG("ERROR: reading answer from server failed with error %ld\n", req->IOSer.io_Error);
+                    ftx->ftx_state = S_ERROR;
+                    ftx->ftx_error = req->IOSer.io_Error;
+                    busy = 0;
+                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                }
+
+                /* extract TFTP packet from received data */
+                if (extract_tftp_packet(req->IOSer.io_Data, req->IOSer.io_Actual, tftppkt) == DOSFALSE) {
+                    LOG("ERROR: reading answer from server failed with error %ld\n", netio_errno);
+                    ftx->ftx_state = S_ERROR;
+                    ftx->ftx_error = netio_errno;
+                    busy = 0;
+                    send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
+                }
+
     //            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
     //            dump_buffer(tftppkt);
                 switch (get_opcode(tftppkt)) {
@@ -729,6 +763,11 @@ void entry()
                         busy = 0;
                         send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }
+                break;
+
+
+            case ACTION_TIMER_EXPIRED:
+                /* TODO */
                 break;
 
 
