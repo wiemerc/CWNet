@@ -511,9 +511,13 @@ void entry()
             case ACTION_DIE:
                 LOG("INFO: packet type = ACTION_DIE\n");
                 LOG("INFO: ACTION_DIE packet received - shutting down\n");
-                /* TODO: abort ongoing IO operations */
+
+                /* abort ongoing IO operation */
+                netio_abort();
+
                 /* tell DOS not to send us any more packets */
                 dnode->dn_Task = NULL;
+
                 running = 0;
                 return_dos_packet(inpkt, DOSTRUE, 0);
                 break;
