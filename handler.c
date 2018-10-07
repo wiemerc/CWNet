@@ -9,11 +9,9 @@
 /*
  * included files
  */
-#include <devices/serial.h>
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/filehandler.h>
-#include <exec/io.h>
 #include <exec/lists.h>
 #include <exec/memory.h>
 #include <exec/types.h>
@@ -77,7 +75,7 @@ BPTR logfh;
 char logmsg[256];
 
 
-/* TODO: move routines to util.c */
+/* TODO: move routines to dos.c */
 /*
  * send_internal_packet - send a DOS packet to ourselves
  */
@@ -167,9 +165,8 @@ void entry()
     struct MsgPort          *port = &(proc->pr_MsgPort);
     struct DeviceNode       *dnode;
     struct Message          *msg;
-    struct DosPacket        *inpkt, iopkt;
+    struct DosPacket        *inpkt, iopkt1, iopkt2;
     struct StandardPacket    outpkt;
-    struct IOExtSer         *req;
     LinkedLock              *llock;
     struct FileLock         *flock;
     struct FileHandle       *fh;
@@ -180,6 +177,7 @@ void entry()
     struct List              locks;
     Buffer                  *tftppkt;
     ULONG                    running = 1, busy = 0;
+    BYTE                     status;
     char                     fname[256], *nameptr;
 
 
@@ -203,39 +201,21 @@ void entry()
      */
     /* initialize logging */
     if ((logport = CreateMsgPort()) == NULL)
-        goto ENOPORT;
-    if ((logfh = Open("CON:0/0/800/200/CWNET Console", MODE_NEWFILE)) == 0)
+        goto ERROR_NO_PORT;
 //    if ((logfh = Open("WORK:cwnet.log", MODE_NEWFILE)) == 0)
-        goto ENOLOG;
+    if ((logfh = Open("CON:0/0/800/200/CWNET Console", MODE_NEWFILE)) == 0)
+        goto ERROR_NO_LOGGING;
 
-    /* initialize serial device and add DOS packet to IO request so that IO completion
-     * messages can be handled as internal packets */
-    if ((req = (struct IOExtSer *) CreateExtIO(port, sizeof(struct IOExtSer))) == NULL) {
-        LOG("CRITICAL: could not create request for serial device\n");
-        goto ENOREQ;
-    }
-    if (OpenDevice("serial.device", 0l, (struct IORequest *) req, 0l) != 0) {
-        LOG("CRITICAL: could not open serial device\n");
-        goto ENODEV;
-    }
-    req->IOSer.io_Message.mn_Node.ln_Name = (char *) &iopkt;
-
-    /* configure device to terminate read requests on SLIP end-of-frame-markers and disable flow control */
-    /* TODO: configure device for maximum speed */
-//    req->io_SerFlags     |= SERF_XDISABLED | SERF_RAD_BOOGIE;
-    req->io_SerFlags     |= SERF_XDISABLED;
-//    req->io_Baud          = 292000l;
-    req->IOSer.io_Command = SDCMD_SETPARAMS;
-    memset(&req->io_TermArray, SLIP_END, 8);
-    if (DoIO((struct IORequest *) req) != 0) {
-        LOG("CRITICAL: could not configure serial device\n");
-        goto ESERCONF;
+    /* initialize the network IO module */
+    if (netio_init(port, &iopkt1, &iopkt2) == DOSFALSE) {
+        LOG("CRITICAL: could not initialize the network IO module\n");
+        goto ERROR_NO_NETIO;
     }
 
     /* allocate a buffer for received TFTP packets */
     if ((tftppkt = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("CRITICAL: could not allocate memory for TFTP packet\n");
-        goto ENOMEM;
+        goto ERROR_NO_MEMORY;
     }
 
     /* initialize lists of file transfers and locks */
@@ -243,11 +223,13 @@ void entry()
     NewList(&locks);
     LOG("INFO: initialization complete - waiting for requests\n");
     
-    /* initialize internal DOS packet */
+    /* initialize internal DOS packets */
     outpkt.sp_Msg.mn_ReplyPort    = port;
     outpkt.sp_Pkt.dp_Port         = port;
     outpkt.sp_Msg.mn_Node.ln_Name = (char *) &(outpkt.sp_Pkt);
     outpkt.sp_Pkt.dp_Link         = &(outpkt.sp_Msg);
+    iopkt1.dp_Type                = 0;
+    iopkt2.dp_Type                = ACTION_TIMER_EXPIRED;
 
     /*
     dummy.ftx_state = S_QUEUED;
@@ -282,6 +264,7 @@ void entry()
             /*
              * regular actions
              */
+            /* TODO: move actions into separate routines in dos.h */
             case ACTION_IS_FILESYSTEM:
                 LOG("INFO: packet type = ACTION_IS_FILESYSTEM\n");
                 return_dos_packet(inpkt, DOSTRUE, 0);
@@ -516,6 +499,7 @@ void entry()
                  * in the list of transfers and return it, protection bits contain the 
                  * state and the size contains the error code. We assume here that the
                  * FileInfoBlock passed is the same as in ACTION_EXAMINE_OBJECT. */
+                /* TODO: fix bug: end of list is not recognized */
                 fib = (struct FileInfoBlock *) BCPL_TO_C_PTR(inpkt->dp_Arg2);
                 ftx = (FileTransfer *) fib->fib_DiskKey;
                 LOG("DEBUG: current transfer = 0x%08lx, next transfer = 0x%08lx\n", ftx, ftx->ftx_node.ln_Succ);
@@ -548,8 +532,8 @@ void entry()
 
 
             /*
-                * internal actions
-                */
+             * internal actions
+             */
             case ACTION_SEND_NEXT_FILE:
                 LOG("DEBUG: received internal packet of type ACTION_SEND_NEXT_FILE\n");
                 if (!busy) {
@@ -557,9 +541,9 @@ void entry()
                         busy = 1;
                         /* store pointer to current FileTransfer structure in DOS packet so
                             * that we can retrieve it in ACTION_WRITE_RETURN below */
-                        iopkt.dp_Type = ACTION_WRITE_RETURN;
-                        iopkt.dp_Arg1 = (LONG) ftx;
-                        if (send_tftp_req_packet(req, OP_WRQ, ftx->ftx_fname) == DOSTRUE) {
+                        iopkt1.dp_Type = ACTION_WRITE_RETURN;
+                        iopkt1.dp_Arg1 = (LONG) ftx;
+                        if (send_tftp_req_packet(OP_WRQ, ftx->ftx_fname) == DOSTRUE) {
                             LOG("DEBUG: sent write request for file '%s' to server\n", ftx->ftx_fname);
                             ftx->ftx_state = S_WRQ_SENT;
                         }
@@ -581,8 +565,8 @@ void entry()
                 if (!IsListEmpty(&(ftx->ftx_buffers))) {
                     fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
                     ++ftx->ftx_blknum;
-                    iopkt.dp_Type = ACTION_WRITE_RETURN;
-                    if (send_tftp_data_packet(req, ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
+                    iopkt1.dp_Type = ACTION_WRITE_RETURN;
+                    if (send_tftp_data_packet(ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
                         LOG("DEBUG: sent data packet #%ld to server\n", ftx->ftx_blknum);
                         ftx->ftx_state = S_DATA_SENT;
                     }
@@ -609,8 +593,8 @@ void entry()
                 fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
                 fbuf->fb_curpos = ((UBYTE *) fbuf->fb_curpos) + TFTP_MAX_DATA_SIZE;
                 ++ftx->ftx_blknum;
-                iopkt.dp_Type = ACTION_WRITE_RETURN;
-                if (send_tftp_data_packet(req, ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
+                iopkt1.dp_Type = ACTION_WRITE_RETURN;
+                if (send_tftp_data_packet(ftx->ftx_blknum, fbuf->fb_curpos, fbuf->fb_nbytes_to_send) == DOSTRUE) {
                     LOG("DEBUG: sent data packet #%ld to server\n", ftx->ftx_blknum);
                     ftx->ftx_state = S_DATA_SENT;
                 }
@@ -650,20 +634,22 @@ void entry()
 
             case ACTION_WRITE_RETURN:
                 LOG("DEBUG: received internal packet of type ACTION_WRITE_RETURN (IO completion message)\n");
-                /* must be a reply message for a write command, but we better check anyway... */
-                if (!CheckIO((struct IORequest *) req)) {
+                ftx = (FileTransfer *) inpkt->dp_Arg1;
+                    
+                /* get status of write command */
+                /* There is a race condition here: As the timer is still running when we
+                 * receive the IO completion message, it could expire before we can stop it */
+                netio_stop_timer();
+                status = netio_get_status();
+                if (status == -1) {
                     LOG("CRITICAL: IO operation has not been completed although IO completion message was received\n");
                     busy = 0;
                     running = 0;
                 }
-                    
-                ftx = (FileTransfer *) inpkt->dp_Arg1;
-
-                /* get status of write command */
-                if (WaitIO((struct IORequest *) req) != 0) {
-                    LOG("ERROR: sending write request / data to server failed with error %ld\n", req->IOSer.io_Error);
+                else if (status > 0) {
+                    LOG("ERROR: sending write request / data to server failed with error %ld\n", status);
                     ftx->ftx_state = S_ERROR;
-                    ftx->ftx_error = req->IOSer.io_Error;
+                    ftx->ftx_error = status;
                     busy = 0;
                     send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }
@@ -671,39 +657,41 @@ void entry()
                 /* read answer from server */
                 /* TODO: answer seems to get lost sometimes */
                 LOG("DEBUG: reading answer from server\n");
-                iopkt.dp_Type = ACTION_READ_RETURN;
-                if (recv_tftp_packet(req) == DOSFALSE) {
+                iopkt1.dp_Type = ACTION_READ_RETURN;
+                if (recv_tftp_packet() == DOSFALSE) {
                     LOG("ERROR: reading answer from server failed with error %ld\n", netio_errno);
                     ftx->ftx_state = S_ERROR;
                     ftx->ftx_error = netio_errno;
                     busy = 0;
                     send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }
-                break;
+                break; /* end ACTION_WRITE_RETURN */
 
 
             case ACTION_READ_RETURN:
                 LOG("DEBUG: received internal packet of type ACTION_READ_RETURN (IO completion message)\n");
-                /* must be a reply message for a read command, but we better check anyway... */
-                if (!CheckIO((struct IORequest *) req)) {
+                ftx = (FileTransfer *) inpkt->dp_Arg1;
+ 
+                /* get status of read command */
+                /* There is a race condition here: As the timer is still running when we
+                 * receive the IO completion message, it could expire before we can stop it */
+                netio_stop_timer();
+                status = netio_get_status();
+                if (status == -1) {
                     LOG("CRITICAL: IO operation has not been completed although IO completion message was received\n");
                     busy = 0;
                     running = 0;
                 }
-                    
-                ftx = (FileTransfer *) inpkt->dp_Arg1;
-
-                /* get status of read command */
-                if (WaitIO((struct IORequest *) req) != 0) {
-                    LOG("ERROR: reading answer from server failed with error %ld\n", req->IOSer.io_Error);
+                else if (status > 0) {
+                    LOG("ERROR: reading answer from server failed with error %ld\n", status);
                     ftx->ftx_state = S_ERROR;
-                    ftx->ftx_error = req->IOSer.io_Error;
+                    ftx->ftx_error = status;
                     busy = 0;
                     send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }
 
                 /* extract TFTP packet from received data */
-                if (extract_tftp_packet(req->IOSer.io_Data, req->IOSer.io_Actual, tftppkt) == DOSFALSE) {
+                if (extract_tftp_packet(tftppkt) == DOSFALSE) {
                     LOG("ERROR: reading answer from server failed with error %ld\n", netio_errno);
                     ftx->ftx_state = S_ERROR;
                     ftx->ftx_error = netio_errno;
@@ -711,8 +699,10 @@ void entry()
                     send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }
 
-    //            LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
-    //            dump_buffer(tftppkt);
+#if DEBUG
+                LOG("DEBUG: dump of received packet (%ld bytes):\n", tftppkt->b_size);
+                dump_buffer(tftppkt);
+#endif
                 switch (get_opcode(tftppkt)) {
                     case OP_ACK:
                         if (ftx->ftx_state == S_WRQ_SENT) {
@@ -762,32 +752,38 @@ void entry()
                         ftx->ftx_error = ERROR_TFTP_UNKNOWN_OPCODE;
                         busy = 0;
                         send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
-                }
-                break;
+                } /* end opcode switch */
+                break; /* end ACTION_READ_RETURN */
 
 
             case ACTION_TIMER_EXPIRED:
-                /* TODO */
+                LOG("DEBUG: received internal packet of type ACTION_TIMER_EXPIRED\n");
+                LOG("ERROR: timeout occured during IO operation\n");
+                
+                /* abort current operation (if it's still running) */
+                netio_abort();
+
+                ftx->ftx_state = S_ERROR;
+                ftx->ftx_error = ERROR_IO_TIMEOUT;
+                busy = 0;
+                send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 break;
 
 
             default:
                 LOG("ERROR: packet type is unknown\n");
                 return_dos_packet(inpkt, DOSFALSE, ERROR_ACTION_NOT_KNOWN);
-        }   /* end switch */
+        }   /* end action switch */
     }   /* end while */
 
 
     Delay(150);
     delete_buffer(tftppkt);
-ENOMEM:
-ESERCONF:
-    CloseDevice((struct IORequest *) req);
-ENODEV:
-    DeleteExtIO((struct IORequest *) req);
-ENOREQ:
+ERROR_NO_MEMORY:
+    netio_exit();
+ERROR_NO_NETIO:
     Close(logfh);
-ENOLOG:
+ERROR_NO_LOGGING:
     DeleteMsgPort(logport);
-ENOPORT:
+ERROR_NO_PORT:
 }

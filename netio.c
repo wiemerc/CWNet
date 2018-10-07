@@ -10,6 +10,125 @@
 
 
 ULONG netio_errno = 0;
+static struct IOExtSer *sreq;
+static struct IOExtTime *treq;
+
+
+/*
+ * initialize this module
+ */
+LONG netio_init(const struct MsgPort *port, const struct DosPacket *iopkt1, const struct DosPacket *iopkt2)
+{
+    /* initialize serial device */
+    if ((sreq = (struct IOExtSer *) CreateExtIO(port, sizeof(struct IOExtSer))) != NULL) {
+        /* add DOS packet to IO request so that IO completion messages can be handled as internal packets */
+        sreq->IOSer.io_Message.mn_Node.ln_Name = (char *) iopkt1;
+        if ((treq = (struct IOExtTime *) CreateExtIO(port, sizeof(struct IOExtTime)))) {
+            /* add DOS packet to IO request so that IO completion messages can be handled as internal packets */
+            treq->tr_node.io_Message.mn_Node.ln_Name = (char *) iopkt2;
+            if (OpenDevice("serial.device", 0l, (struct IORequest *) sreq, 0l) == 0) {
+                /* configure device to terminate read requests on SLIP end-of-frame-markers and disable flow control */
+                /* 
+                 * TODO: configure device for maximum speed:
+                sreq->io_SerFlags     |= SERF_XDISABLED | SERF_RAD_BOOGIE;
+                sreq->io_Baud          = 292000l;
+                 */
+                sreq->io_SerFlags     |= SERF_XDISABLED;
+                sreq->IOSer.io_Command = SDCMD_SETPARAMS;
+                memset(&sreq->io_TermArray, SLIP_END, 8);
+                if (DoIO((struct IORequest *) sreq) == 0) {
+                    if (OpenDevice("timer.device", UNIT_VBLANK, (struct IORequest *) treq, 0l) == 0) {
+                        LOG("INFO: network IO module initialized\n");
+                        return DOSTRUE;
+                    }
+                    else {
+                        LOG("CRITICAL: could not open timer device\n");
+                        CloseDevice((struct IORequest *) sreq);
+                        DeleteExtIO((struct IORequest *) treq);
+                        DeleteExtIO((struct IORequest *) sreq);
+                        return DOSFALSE;
+                    }
+                }
+                else {
+                    LOG("CRITICAL: could not configure serial device\n");
+                    CloseDevice((struct IORequest *) sreq);
+                    DeleteExtIO((struct IORequest *) treq);
+                    DeleteExtIO((struct IORequest *) sreq);
+                    return DOSFALSE;
+                }
+            }
+            else {
+                LOG("CRITICAL: could not open serial device\n");
+                DeleteExtIO((struct IORequest *) treq);
+                DeleteExtIO((struct IORequest *) sreq);
+                return DOSFALSE;
+            }
+        }
+        else {
+            LOG("CRITICAL: could not create request for timer device\n");
+            DeleteExtIO((struct IORequest *) sreq);
+            return DOSFALSE;
+        }
+    }
+    else {
+        LOG("CRITICAL: could not create request for serial device\n");
+        return DOSFALSE;
+    }
+}
+
+
+/*
+ * free all ressources
+ */
+void netio_exit()
+{
+    CloseDevice((struct IORequest *) treq);
+    CloseDevice((struct IORequest *) sreq);
+    DeleteExtIO((struct IORequest *) treq);
+    DeleteExtIO((struct IORequest *) sreq);
+}
+
+
+/*
+ * get status of last IO operation 
+ * 
+ * returns:
+ * 0 if last operation was successful
+ * the error code from the serial device (values > 0) if an error occurred
+ * -1 if the status could not be determined, netio_errno is set in this case
+ */
+BYTE netio_get_status()
+{
+    /* check if IO operation has actually finished */
+    if (!CheckIO((struct IORequest *) sreq)) {
+        LOG("ERROR: IO operation has not yet finished\n");
+        netio_errno = ERROR_IO_NOT_FINISHED;
+        return -1;
+    }
+    return WaitIO((struct IORequest *) sreq);
+}
+
+
+/*
+ * stop the running IO timer
+ */
+void netio_stop_timer()
+{
+    /* We ignore any errors that might occur */
+    AbortIO((struct IORequest *) treq);
+    WaitIO((struct IORequest *) treq);
+}
+
+
+/*
+ * abort the current IO operation (called when a timeout occurs)
+ */
+void netio_abort()
+{
+    /* We ignore any errors that might occur */
+    AbortIO((struct IORequest *) sreq);
+    WaitIO((struct IORequest *) sreq);
+}
 
 
 /*
@@ -25,7 +144,6 @@ static LONG slip_encode_buffer(Buffer *dbuf, const Buffer *sbuf)
      * because due to the escaping mechanism in SLIP, we can get two bytes in
      * one pass of the loop.
      */
-    netio_errno = ERROR_BUFFER_OVERFLOW;
     for (nbytes = 0;
         nbytes < sbuf->b_size && nbytes_tot < MAX_BUFFER_SIZE - 1; 
 		nbytes++, nbytes_tot++, src++, dst++) {
@@ -48,6 +166,7 @@ static LONG slip_encode_buffer(Buffer *dbuf, const Buffer *sbuf)
     dbuf->b_size = nbytes_tot;
     if (nbytes < sbuf->b_size) {
         LOG("ERROR: could not copy all bytes to the destination\n");
+        netio_errno = ERROR_BUFFER_OVERFLOW;
         return DOSFALSE;
     }
     netio_errno = 0;
@@ -268,49 +387,62 @@ static Buffer *create_slip_frame(const Buffer *data)
 }
 
 
-static LONG send_slip_frame(struct IOExtSer *req, const Buffer *frame, BOOL async)
+static LONG send_slip_frame(const Buffer *frame, BOOL async)
 {
     BYTE error;
 
-    req->io_SerFlags     &= ~SERF_EOFMODE;      /* clear EOF mode */
-    req->IOSer.io_Command = CMD_WRITE;
-    req->IOSer.io_Length  = frame->b_size;
-    req->IOSer.io_Data    = (APTR) frame->b_addr;
+    sreq->io_SerFlags     &= ~SERF_EOFMODE;      /* clear EOF mode */
+    sreq->IOSer.io_Command = CMD_WRITE;
+    sreq->IOSer.io_Length  = frame->b_size;
+    sreq->IOSer.io_Data    = (APTR) frame->b_addr;
     if (async) {
-        SendIO((struct IORequest *) req);
-        error = 0;
-    }
-    else
-        error = DoIO((struct IORequest *) req);
-    netio_errno = error;
-    if (error == 0)
-        return DOSTRUE;
-    else
-        return DOSFALSE;
-}
-
-
-static LONG recv_slip_frame(struct IOExtSer *req, Buffer *frame, BOOL async)
-{
-    BYTE error;
-
-    /* TODO: add a timeout using the timer device (TR_ADDREQUEST) */
-    req->io_SerFlags     |= SERF_EOFMODE;       /* set EOF mode */
-    req->IOSer.io_Command = CMD_READ;
-    req->IOSer.io_Length  = MAX_BUFFER_SIZE;
-    req->IOSer.io_Data    = (APTR) frame->b_addr;
-    if (async) {
-        SendIO((struct IORequest *) req);
+        SendIO((struct IORequest *) sreq);
+        treq->tr_node.io_Command = TR_ADDREQUEST;
+        treq->tr_time.tv_secs    = NETIO_TIMEOUT;
+        treq->tr_time.tv_micro   = 0;
+        SendIO((struct IORequest *) treq);
         netio_errno = 0;
         return DOSTRUE;
     }
     else {
-        error = DoIO((struct IORequest *) req);
+        error = DoIO((struct IORequest *) sreq);
+        netio_errno = error;
+        if (error == 0)
+            return DOSTRUE;
+        else
+            return DOSFALSE;
+    }
+}
+
+
+static LONG recv_slip_frame(Buffer *frame, BOOL async)
+{
+    BYTE error;
+
+    /* TODO: It would be better if the whole network stack ran in its own task,
+     *       then we could handle timeouts internally instead of in the main loop */
+    sreq->io_SerFlags     |= SERF_EOFMODE;       /* set EOF mode */
+    sreq->IOSer.io_Command = CMD_READ;
+    sreq->IOSer.io_Length  = MAX_BUFFER_SIZE;
+    sreq->IOSer.io_Data    = (APTR) frame->b_addr;
+    if (async) {
+        SendIO((struct IORequest *) sreq);
+        treq->tr_node.io_Command = TR_ADDREQUEST;
+        treq->tr_time.tv_secs    = NETIO_TIMEOUT;
+        treq->tr_time.tv_micro   = 0;
+        SendIO((struct IORequest *) treq);
+        netio_errno = 0;
+        return DOSTRUE;
+    }
+    else {
+        error = DoIO((struct IORequest *) sreq);
         netio_errno = error;
         if (error == 0) {
-//            LOG("DEBUG: dump of received SLIP frame (%ld bytes):\n", frame->b_size);
-//            dump_buffer(frame);
-            frame->b_size = req->IOSer.io_Actual;
+#if DEBUG
+            LOG("DEBUG: dump of received SLIP frame (%ld bytes):\n", frame->b_size);
+            dump_buffer(frame);
+#endif
+            frame->b_size = sreq->IOSer.io_Actual;
             return DOSTRUE;
         }
         else
@@ -322,7 +454,7 @@ static LONG recv_slip_frame(struct IOExtSer *req, Buffer *frame, BOOL async)
 /*
  * TFTP routines
  */
-static LONG send_tftp_packet(struct IOExtSer *req, Buffer *pkt, BOOL async)
+static LONG send_tftp_packet(Buffer *pkt, BOOL async)
 {
     Buffer *curbuf, *prevbuf;
 
@@ -355,7 +487,7 @@ static LONG send_tftp_packet(struct IOExtSer *req, Buffer *pkt, BOOL async)
         return DOSFALSE;
     }
     delete_buffer(prevbuf);
-    if (send_slip_frame(req, curbuf, async) == DOSFALSE) {
+    if (send_slip_frame(curbuf, async) == DOSFALSE) {
         LOG("ERROR: error occurred while sending SLIP frame: %ld\n", netio_errno);
     }
     delete_buffer(curbuf);
@@ -367,7 +499,7 @@ static LONG send_tftp_packet(struct IOExtSer *req, Buffer *pkt, BOOL async)
 }
 
 
-LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname)
+LONG send_tftp_req_packet(USHORT opcode, const char *fname)
 {
     Buffer *pkt;
     UBYTE *pos;
@@ -400,11 +532,11 @@ LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname
     strcpy((char *) pos, "NETASCII");         /* mode */
     pkt->b_size = strlen(fname) + 12;
     
-    return send_tftp_packet(req, pkt, 1);     /* send asynchronously */
+    return send_tftp_packet(pkt, 1);     /* send asynchronously */
 }
 
 
-LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *bytes, LONG nbytes)
+LONG send_tftp_data_packet(USHORT blknum, const UBYTE *bytes, LONG nbytes)
 {
     Buffer *pkt;
     UBYTE *pos;
@@ -426,11 +558,11 @@ LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *byt
     memcpy(pos, bytes, nbytes);
     pkt->b_size = nbytes + 4;
 
-    return send_tftp_packet(req, pkt, 1);     /* send asynchronously */
+    return send_tftp_packet(pkt, 1);     /* send asynchronously */
 }
 
 
-LONG recv_tftp_packet(struct IOExtSer *req)
+LONG recv_tftp_packet()
 {
     Buffer *buf;
 
@@ -439,18 +571,19 @@ LONG recv_tftp_packet(struct IOExtSer *req)
         netio_errno = ERROR_NO_FREE_STORE;
         return DOSFALSE;
     }
-    return recv_slip_frame(req, buf, 1 /* receive asynchronously */);
+    return recv_slip_frame(buf, 1 /* receive asynchronously */);
 }
 
 
-LONG extract_tftp_packet(APTR addr, ULONG size, Buffer *pkt)
+LONG extract_tftp_packet(Buffer *pkt)
 {
     Buffer data, *prevbuf, *curbuf;
 
-    /* We reconstruct the buffer that was allocated in recv_tftp_packet(), addr points to
-     * the data read by the serial device, size is the number of bytes read */
-    data.b_addr = addr;
-    data.b_size = size;
+    /* reconstruct the buffer that was allocated in recv_tftp_packet(), of course this
+     * only works when the function is called after a server reply has been read 
+     * (the IO operation initiated by recv_tftp_packet() has completed) */
+    data.b_addr = sreq->IOSer.io_Data;      /* data read from the server */
+    data.b_size = sreq->IOSer.io_Actual;    /* number of bytes read */
     prevbuf = &data;
     if ((curbuf = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for IP packet\n");

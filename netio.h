@@ -16,6 +16,7 @@
 #include <dos/dosasl.h>
 #include <exec/io.h>
 #include <exec/types.h>
+#include <proto/alib.h>
 #include <proto/exec.h>
 
 #include "util.h"
@@ -107,6 +108,8 @@ typedef struct {
 #define ERROR_TFTP_GENERIC_ERROR    1000
 #define ERROR_TFTP_UNKNOWN_OPCODE   1001
 #define ERROR_TFTP_WRONG_BLOCK_NUM  1002
+#define ERROR_IO_NOT_FINISHED       1003
+#define ERROR_IO_TIMEOUT            1004
 
 
 /*
@@ -121,13 +124,22 @@ typedef struct {
 #define ACTION_TIMER_EXPIRED        5006
 
 
+#define IOExtTime timerequest   /* just to make the code look a bit nicer... */
+#define NETIO_TIMEOUT 10        /* timeout for reads and writes in seconds */
+
+
 /*
  * function prototypes
  */
-LONG send_tftp_req_packet(struct IOExtSer *req, USHORT opcode, const char *fname);
-LONG send_tftp_data_packet(struct IOExtSer *req, USHORT blknum, const UBYTE *bytes, LONG nbytes);
-LONG recv_tftp_packet(struct IOExtSer *req);
-LONG extract_tftp_packet(APTR addr, ULONG size, Buffer *pkt);
+LONG netio_init(const struct MsgPort *port, const struct DosPacket *iopkt1, const struct DosPacket *iopkt2);
+void netio_exit();
+BYTE netio_get_status();
+void netio_stop_timer();
+void netio_abort();
+LONG send_tftp_req_packet(USHORT opcode, const char *fname);
+LONG send_tftp_data_packet(USHORT blknum, const UBYTE *bytes, LONG nbytes);
+LONG recv_tftp_packet();
+LONG extract_tftp_packet(Buffer *pkt);
 USHORT get_opcode(const Buffer *pkt);
 USHORT get_blknum(const Buffer *pkt);
 
