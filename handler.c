@@ -663,6 +663,7 @@ void entry()
             case ACTION_READ_RETURN:
                 LOG("DEBUG: received internal packet of type ACTION_READ_RETURN (IO completion message)\n");
                 ftx = (FileTransfer *) inpkt->dp_Arg1;
+                fbuf = (FileBuffer *) ftx->ftx_buffers.lh_Head;
  
                 /* get status of read command */
                 /* There is a race condition here: As the timer is still running when we
