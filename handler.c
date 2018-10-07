@@ -48,7 +48,7 @@ typedef struct
  * file lock that can be put into a list
  * The FileLock structure already contains a field fl_Link that we could use for chaining
  * locks together, but the advantage of the structure below is that we can use the
- * standard list management functions like AddTail(), RemTail(), Remove() and so on.
+ * standard list management functions like AddTail(), RemHead(), FindName() and so on.
  */
 typedef struct
 {
@@ -111,32 +111,13 @@ static FileTransfer *get_next_file_from_queue(const struct List *transfers)
 
     if (IsListEmpty(transfers))
         return NULL;
-    while (ftx && (ftx->ftx_state != S_READY))
-        ftx = (FileTransfer *) ftx->ftx_node.ln_Succ;
-    return ftx;
-}
-
-
-/*
- * find_file_in_queue - find file in queue with the given name
- */
-static FileTransfer *find_file_in_queue(const struct List *transfers, const char *fname)
-{
-    FileTransfer *ftx = (FileTransfer *) transfers->lh_Head;
-    const char   *nameptr;
-
-    if (IsListEmpty(transfers))
-        return NULL;
-
-    /* search for name *without* the device name in list,
-     * only the first 30 characters are compared */
-    if (strrchr(fname, ':'))
-        nameptr = strrchr(fname, ':') + 1;
-    else
-        nameptr = fname;
-    while (ftx && (strncmp(ftx->ftx_fname, nameptr, 30) != 0))
-        ftx = (FileTransfer *) ftx->ftx_node.ln_Succ;
-    return ftx;
+    for (ftx = (FileTransfer *) transfers->lh_Head;
+         ftx != (FileTransfer *) &transfers->lh_Tail;
+         ftx = (FileTransfer *) ftx->ftx_node.ln_Succ) {
+        if (ftx->ftx_state == S_READY)
+            return ftx;
+    }
+    return NULL;
 }
 
 
@@ -145,13 +126,17 @@ static FileTransfer *find_file_in_queue(const struct List *transfers, const char
  */
 static LinkedLock *find_lock_in_list(const struct List *locks, const struct FileLock *flock)
 {
-    LinkedLock *llock = (LinkedLock *) locks->lh_Head;
+    LinkedLock *llock;
 
     if (IsListEmpty(locks))
         return NULL;
-    while (llock && (&(llock->ll_flock) != flock))
-        llock = (LinkedLock *) llock->ll_node.ln_Succ;
-    return llock;
+    for (llock = (LinkedLock *) locks->lh_Head;
+         llock != (LinkedLock *) &locks->lh_Tail;
+         llock = (LinkedLock *) llock->ll_node.ln_Succ) {
+        if (&llock->ll_flock == flock)
+            return llock;
+    }
+    return NULL;
 }
 
 
@@ -171,7 +156,7 @@ void entry()
     struct FileLock         *flock;
     struct FileHandle       *fh;
     struct FileInfoBlock    *fib;
-    FileTransfer            *ftx, dummy;
+    FileTransfer            *ftx;
     FileBuffer              *fbuf;
     struct List              transfers;
     struct List              locks;
@@ -231,13 +216,6 @@ void entry()
     iopkt1.dp_Type                = 0;
     iopkt2.dp_Type                = ACTION_TIMER_EXPIRED;
 
-    /*
-    dummy.ftx_state = S_QUEUED;
-    dummy.ftx_error = 0;
-    dummy.ftx_node.ln_Succ = NULL;
-    strncpy(dummy.ftx_fname, "xxx", 256);
-    AddTail(&transfers, (struct Node *) &dummy);
-    */
 
     /* TODO: reverse conditions to get rid of nested ifs */
     /*
@@ -285,11 +263,13 @@ void entry()
                     * ACTION_WRITE packet, otherwise the last packet of a buffer doesn't get 
                     * saved by the server because the block number would be reset to 1 in the 
                     * middle of a transfer and the server would assume a duplicate packet. */
-                if ((ftx = (FileTransfer *) AllocVec(sizeof(FileTransfer), MEMF_CLEAR)) != NULL) {
+                if ((ftx = (FileTransfer *) AllocVec(sizeof(FileTransfer), 0)) != NULL) {
                     ftx->ftx_state  = S_QUEUED;
-                    ftx->ftx_blknum = 0;    /* will be set to 1 upon sending the first buffer */
+                    ftx->ftx_blknum = 0;                        /* will be set to 1 upon sending the first buffer */
                     ftx->ftx_error  = 0;
-                    strncpy(ftx->ftx_fname, nameptr, 256);
+                    ftx->ftx_node.ln_Name = ftx->ftx_fname;     /* so that we can use FindName() */
+                    strncpy(ftx->ftx_fname, nameptr, 255);
+                    ftx->ftx_fname[255] = 0;
                     NewList(&(ftx->ftx_buffers));
                     AddTail(&transfers, (struct Node *) ftx);
                     fh->fh_Arg1 = (LONG) ftx;
@@ -309,11 +289,11 @@ void entry()
                 LOG("INFO: packet type = ACTION_WRITE\n");
                 ftx = (FileTransfer *) inpkt->dp_Arg1;
                 /* initialize FileBuffer structure and queue it (one buffer for each ACTION_WRITE packet */
-                if ((fbuf = (FileBuffer *) AllocVec(sizeof(FileBuffer), MEMF_CLEAR)) != NULL) {
+                if ((fbuf = (FileBuffer *) AllocVec(sizeof(FileBuffer), 0)) != NULL) {
                     /* We need to copy the buffer because we return the packet before the 
                     * buffer is sent and the client is free to reuse / free the buffer once the
                     * packet has been returned. */
-                    if ((fbuf->fb_bytes = AllocVec(inpkt->dp_Arg3, MEMF_CLEAR)) != NULL) {
+                    if ((fbuf->fb_bytes = AllocVec(inpkt->dp_Arg3, 0)) != NULL) {
                         memcpy(fbuf->fb_bytes, (APTR) inpkt->dp_Arg2, inpkt->dp_Arg3);
                         fbuf->fb_curpos         = fbuf->fb_bytes;
                         fbuf->fb_nbytes_to_send = inpkt->dp_Arg3;
@@ -362,7 +342,7 @@ void entry()
                 LOG("DEBUG: lock = 0x%08lx, name = %s, mode = %ld\n", inpkt->dp_Arg1, fname, inpkt->dp_Arg3);
 
                 /* initialize FileLock structure */
-                if ((llock = (LinkedLock *) AllocVec(sizeof(LinkedLock), MEMF_CLEAR)) != NULL) {
+                if ((llock = (LinkedLock *) AllocVec(sizeof(LinkedLock), 0)) != NULL) {
                     flock = &(llock->ll_flock);
                     flock->fl_Link = 0;
                     flock->fl_Access = inpkt->dp_Arg3;
@@ -395,7 +375,12 @@ void entry()
                     }
                     else {
                         /* lock is being requested for a single file in the queue */
-                        if ((ftx = find_file_in_queue(&transfers, fname)) != NULL) {
+                        /* => search for name *without* the device name in list */
+                        if (strrchr(fname, ':'))
+                            nameptr = strrchr(fname, ':') + 1;
+                        else
+                            nameptr = fname;
+                        if ((ftx = (FileTransfer *) FindName(&transfers, nameptr)) != NULL) {
                             LOG("DEBUG: lock for file '%s' requested\n", fname);
                             flock->fl_Key = (LONG) ftx;
                             return_dos_packet(inpkt, C_TO_BCPL_PTR(flock), 0);
@@ -499,17 +484,20 @@ void entry()
                  * in the list of transfers and return it, protection bits contain the 
                  * state and the size contains the error code. We assume here that the
                  * FileInfoBlock passed is the same as in ACTION_EXAMINE_OBJECT. */
-                /* TODO: fix bug: end of list is not recognized */
                 fib = (struct FileInfoBlock *) BCPL_TO_C_PTR(inpkt->dp_Arg2);
                 ftx = (FileTransfer *) fib->fib_DiskKey;
-                LOG("DEBUG: current transfer = 0x%08lx, next transfer = 0x%08lx\n", ftx, ftx->ftx_node.ln_Succ);
-                if (ftx) {
+                /* The end of the list is not reached when the pointer to the next node
+                 * (ln_Succ) is NULL (which is stated in the ROM Reference Manual and 
+                 * would seem logical) but when it points to the lh_Tail field of the
+                 * list structure. I don't understand why, but this is also what
+                 * Matt Dillon checks for in his code, so it can't be that wrong... */
+                if (ftx != (FileTransfer *) &transfers.lh_Tail) {
                     LOG("DEBUG: still entries to examine\n");
                     fib->fib_DiskKey      = (LONG) ftx->ftx_node.ln_Succ;
                     fib->fib_Protection   = ftx->ftx_state;
                     fib->fib_Size         = ftx->ftx_error;
-                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname);
-                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, 30);     /* BCPL string */
+                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname) % 255;   /* BCPL string => first byte contains length */
+                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, strlen(ftx->ftx_fname) % 255);
                     /* TODO: initialize fib_Date */
                     return_dos_packet(inpkt, DOSTRUE, 0);
                 }
