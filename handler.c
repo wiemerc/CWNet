@@ -140,7 +140,6 @@ void entry()
             /*
              * regular actions
              */
-            /* TODO: move actions into separate routines in dos.h */
             case ACTION_IS_FILESYSTEM:
                 LOG("INFO: packet type = ACTION_IS_FILESYSTEM\n");
                 return_dos_packet(inpkt, DOSTRUE, 0);
