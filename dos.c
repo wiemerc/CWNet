@@ -277,8 +277,10 @@ void do_examine_object(struct DosPacket *inpkt)
         fib->fib_Protection   = ftx->ftx_state;
         fib->fib_Size         = ftx->ftx_error;
         /* fib_FileName is a BCPL string => first byte contains length, but for some
-            * reason it has to be null-terminated as well, => maximum length is MAX_FILENAME_LEN - 1,
-            * we can copy MAX_FILENAME_LEN - 2 characters at most */
+            * reason it has to be null-terminated as well, => maximum length is MAX_FILENAME_LEN - 2,
+            * and we can copy MAX_FILENAME_LEN - 2 characters at most */
+        /* TODO: For some reason, the last character of the file name gets lost on its way
+         *       to the application calling Examine() or ExNext() */
         fib->fib_FileName[0]  = strlen(ftx->ftx_fname) % MAX_FILENAME_LEN - 1;
         strncpy(fib->fib_FileName + 1, ftx->ftx_fname, MAX_FILENAME_LEN - 2);
         fib->fib_FileName[MAX_FILENAME_LEN - 1] = 0;
