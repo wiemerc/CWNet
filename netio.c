@@ -17,13 +17,13 @@ static struct IOExtTime *treq;
 /*
  * initialize this module
  */
-LONG netio_init(const struct MsgPort *port, const struct DosPacket *iopkt1, const struct DosPacket *iopkt2)
+LONG netio_init(const struct DosPacket *iopkt1, const struct DosPacket *iopkt2)
 {
     /* initialize serial device */
-    if ((sreq = (struct IOExtSer *) CreateExtIO(port, sizeof(struct IOExtSer))) != NULL) {
+    if ((sreq = (struct IOExtSer *) CreateExtIO(g_port, sizeof(struct IOExtSer))) != NULL) {
         /* add DOS packet to IO request so that IO completion messages can be handled as internal packets */
         sreq->IOSer.io_Message.mn_Node.ln_Name = (char *) iopkt1;
-        if ((treq = (struct IOExtTime *) CreateExtIO(port, sizeof(struct IOExtTime)))) {
+        if ((treq = (struct IOExtTime *) CreateExtIO(g_port, sizeof(struct IOExtTime)))) {
             /* add DOS packet to IO request so that IO completion messages can be handled as internal packets */
             treq->tr_node.io_Message.mn_Node.ln_Name = (char *) iopkt2;
             if (OpenDevice("serial.device", 0l, (struct IORequest *) sreq, 0l) == 0) {

@@ -14,21 +14,18 @@
  */
 void log(const char *msg)
 {
-    struct StandardPacket *pkt;
-    if ((pkt = (struct StandardPacket *) AllocVec(sizeof(struct StandardPacket), MEMF_PUBLIC | MEMF_CLEAR)) != NULL) {
-        pkt->sp_Msg.mn_ReplyPort    = logport;
-        pkt->sp_Pkt.dp_Port         = logport;
-        pkt->sp_Msg.mn_Node.ln_Name = (char *) &(pkt->sp_Pkt);
-        pkt->sp_Pkt.dp_Link         = &(pkt->sp_Msg);
-        pkt->sp_Pkt.dp_Type = ACTION_WRITE;
-        pkt->sp_Pkt.dp_Arg1 = ((struct FileHandle *) BCPL_TO_C_PTR(logfh))->fh_Arg1;
-        pkt->sp_Pkt.dp_Arg2 = (LONG) msg;
-        pkt->sp_Pkt.dp_Arg3 = strlen(msg);
-        PutMsg((struct MsgPort *) ((struct FileHandle *) BCPL_TO_C_PTR(logfh))->fh_Type, &(pkt->sp_Msg));
-        WaitPort(logport);
-        GetMsg(logport);
-        FreeVec(pkt);
-    }
+    struct StandardPacket pkt;
+    pkt.sp_Msg.mn_ReplyPort    = g_logport;
+    pkt.sp_Pkt.dp_Port         = g_logport;
+    pkt.sp_Msg.mn_Node.ln_Name = (char *) &(pkt.sp_Pkt);
+    pkt.sp_Pkt.dp_Link         = &(pkt.sp_Msg);
+    pkt.sp_Pkt.dp_Type = ACTION_WRITE;
+    pkt.sp_Pkt.dp_Arg1 = ((struct FileHandle *) BCPL_TO_C_PTR(g_logfh))->fh_Arg1;
+    pkt.sp_Pkt.dp_Arg2 = (LONG) msg;
+    pkt.sp_Pkt.dp_Arg3 = strlen(msg);
+    PutMsg((struct MsgPort *) ((struct FileHandle *) BCPL_TO_C_PTR(g_logfh))->fh_Type, &(pkt.sp_Msg));
+    WaitPort(g_logport);
+    GetMsg(g_logport);
 }
 
 

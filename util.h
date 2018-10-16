@@ -42,16 +42,16 @@ void dump_buffer(const Buffer *buffer);
 /*
  * external references
  */
-extern struct MsgPort *logport;
-extern BPTR logfh;
-extern char logmsg[256];
+extern struct MsgPort *g_logport;
+extern BPTR g_logfh;
+extern char g_logmsg[256];
 
 
 /*
  * constants / macros
  */
 #define MAX_BUFFER_SIZE 1024
-#define LOG(fmt, ...) {sprintf(logmsg, fmt, ##__VA_ARGS__); log(logmsg);}
+#define LOG(fmt, ...) {sprintf(g_logmsg, fmt, ##__VA_ARGS__); log(g_logmsg);}
 #define C_TO_BCPL_PTR(ptr) ((BPTR) (((ULONG) (ptr)) >> 2))
 #define BCPL_TO_C_PTR(ptr) ((APTR) (((ULONG) (ptr)) << 2))
 

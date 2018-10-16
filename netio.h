@@ -20,6 +20,7 @@
 #include <proto/exec.h>
 
 #include "util.h"
+#include "dos.h"
 
 
 /*
@@ -92,7 +93,10 @@ typedef struct {
 #define    ENOUSER     7        /* no such user */
 #define    EOPTNEG     8        /* option negotiation failed */
 
-/* states */
+
+/*
+ * states
+ */
 #define S_QUEUED       0
 #define S_READY        1
 #define S_WRQ_SENT     2
@@ -102,38 +106,14 @@ typedef struct {
 #define S_FINISHED     6
 
 
-/*
- * custom DOS error codes
- */
-#define ERROR_TFTP_GENERIC_ERROR    1000
-#define ERROR_TFTP_UNKNOWN_OPCODE   1001
-#define ERROR_TFTP_WRONG_BLOCK_NUM  1002
-#define ERROR_IO_NOT_FINISHED       1003
-#define ERROR_IO_TIMEOUT            1004
-
-
-/*
- * internal actions
- */
-#define ACTION_SEND_NEXT_FILE       5000
-#define ACTION_SEND_NEXT_BUFFER     5001
-#define ACTION_CONTINUE_BUFFER      5002
-#define ACTION_FILE_FINISHED        5003
-#define ACTION_FILE_FAILED          5004
-#define ACTION_BUFFER_FINISHED      5005
-#define ACTION_TIMER_EXPIRED        5006
-
-
 #define IOExtTime timerequest   /* just to make the code look a bit nicer... */
 #define NETIO_TIMEOUT 10        /* timeout for reads and writes in seconds */
-#define MAX_PATH_LEN 256        /* for all file names */
-#define MAX_FILENAME_LEN 108    /* for all file names */
 
 
 /*
  * function prototypes
  */
-LONG netio_init(const struct MsgPort *port, const struct DosPacket *iopkt1, const struct DosPacket *iopkt2);
+LONG netio_init(const struct DosPacket *iopkt1, const struct DosPacket *iopkt2);
 void netio_exit();
 BYTE netio_get_status();
 void netio_stop_timer();
@@ -146,7 +126,10 @@ USHORT get_opcode(const Buffer *pkt);
 USHORT get_blknum(const Buffer *pkt);
 
 
-/* external reference to the global variable holding network IO error codes */
-extern ULONG netio_errno;
+/*
+ * external references
+ */
+extern struct MsgPort   *g_port;
+extern ULONG             netio_errno;    /* network IO error code */
 
 #endif /* CWNET_NETIO_H */
