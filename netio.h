@@ -126,6 +126,8 @@ typedef struct {
 
 #define IOExtTime timerequest   /* just to make the code look a bit nicer... */
 #define NETIO_TIMEOUT 10        /* timeout for reads and writes in seconds */
+#define MAX_PATH_LEN 256        /* for all file names */
+#define MAX_FILENAME_LEN 108    /* for all file names */
 
 
 /*

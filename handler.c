@@ -36,7 +36,7 @@ typedef struct
 typedef struct 
 {
     struct Node ftx_node;   /* so that these structures can be put into a list */
-    char        ftx_fname[256];
+    char        ftx_fname[MAX_PATH_LEN];
     ULONG       ftx_state;
     ULONG       ftx_blknum;
     ULONG       ftx_error;
@@ -163,7 +163,7 @@ void entry()
     Buffer                  *tftppkt;
     ULONG                    running = 1, busy = 0;
     BYTE                     status;
-    char                     fname[256], *nameptr;
+    char                     fname[MAX_PATH_LEN], *nameptr;
 
 
     /* wait for startup packet */
@@ -268,12 +268,12 @@ void entry()
                     ftx->ftx_blknum = 0;                        /* will be set to 1 upon sending the first buffer */
                     ftx->ftx_error  = 0;
                     ftx->ftx_node.ln_Name = ftx->ftx_fname;     /* so that we can use FindName() */
-                    strncpy(ftx->ftx_fname, nameptr, 255);
-                    ftx->ftx_fname[255] = 0;
+                    strncpy(ftx->ftx_fname, nameptr, MAX_PATH_LEN - 1);
+                    ftx->ftx_fname[MAX_PATH_LEN - 1] = 0;
                     NewList(&(ftx->ftx_buffers));
                     AddTail(&transfers, (struct Node *) ftx);
                     fh->fh_Arg1 = (LONG) ftx;
-                    fh->fh_Port = (struct MsgPort *) DOSTRUE;   /* TODO: really necessary? */
+                    fh->fh_Port = (struct MsgPort *) DOSFALSE;  /* tells DOS we're not interactive */
                     
                     LOG("INFO: added file '%s' to queue\n", ftx->ftx_fname);
                     return_dos_packet(inpkt, DOSTRUE, 0);
@@ -430,9 +430,9 @@ void entry()
 
                 fib = (struct FileInfoBlock *) BCPL_TO_C_PTR(inpkt->dp_Arg2);
                 if (flock->fl_Key == 0) {
-                    /* lock refers to root directory => fill FileInfoBlock structure with 
-                    * the values for the root directory, *not* for the first entry in the 
-                    * list of transfers (this happens in the first ACTION_EXAMINE_NEXT packet) */
+                    /* lock refers to root directory => fill FileInfoBlock structure with
+                     * the values for the root directory, *not* for the first entry in the
+                     * list of transfers (this happens in the first ACTION_EXAMINE_NEXT packet) */
                     if (!IsListEmpty(&transfers)) {
                         LOG("DEBUG: entries to examine\n");
                         fib->fib_DiskKey      = (LONG) transfers.lh_Head;
@@ -440,8 +440,8 @@ void entry()
                         fib->fib_EntryType    = ST_ROOT;
                         fib->fib_Protection   = FIBF_READ | FIBF_WRITE | FIBF_EXECUTE;
                         fib->fib_Size         = 0;
-                        fib->fib_FileName[0]  = 0;    /* BCPL string */
-                        fib->fib_Comment[0]   = 0;    /* BCPL string */
+                        fib->fib_FileName[0]  = 0;    /* BCPL string => first byte contains length */
+                        fib->fib_Comment[0]   = 0;    /* BCPL string => first byte contains length */
                         return_dos_packet(inpkt, DOSTRUE, 0);
                     }
                     else {
@@ -451,14 +451,18 @@ void entry()
                 }
                 else {
                     /* lock refers to a single file => fill FileInfoBlock structure with 
-                    * the values from the entry in the list of transfers for this file, protection
-                    * bits contain the state and the size contains the error code */
+                     * the values from the entry in the list of transfers for this file, protection
+                     * bits contain the state and the size contains the error code */
                     ftx = (FileTransfer *) flock->fl_Key;
                     fib->fib_DiskKey      = (LONG) ftx;
                     fib->fib_Protection   = ftx->ftx_state;
                     fib->fib_Size         = ftx->ftx_error;
-                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname);
-                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, 30);     /* BCPL string */
+                    /* fib_FileName is a BCPL string => first byte contains length, but for some
+                     * reason it has to be null-terminated as well, => maximum length is MAX_FILENAME_LEN - 1,
+                     * we can copy MAX_FILENAME_LEN - 2 characters at most */
+                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname) % MAX_FILENAME_LEN - 1;
+                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, MAX_FILENAME_LEN - 2);
+                    fib->fib_FileName[MAX_FILENAME_LEN - 1] = 0;
                     /* TODO: initialize fib_Date */
                     return_dos_packet(inpkt, DOSTRUE, 0);
                 }
@@ -496,8 +500,9 @@ void entry()
                     fib->fib_DiskKey      = (LONG) ftx->ftx_node.ln_Succ;
                     fib->fib_Protection   = ftx->ftx_state;
                     fib->fib_Size         = ftx->ftx_error;
-                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname) % 255;   /* BCPL string => first byte contains length */
-                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, strlen(ftx->ftx_fname) % 255);
+                    fib->fib_FileName[0]  = strlen(ftx->ftx_fname) % MAX_FILENAME_LEN - 1;
+                    strncpy(fib->fib_FileName + 1, ftx->ftx_fname, MAX_FILENAME_LEN - 2);
+                    fib->fib_FileName[MAX_FILENAME_LEN - 1] = 0;
                     /* TODO: initialize fib_Date */
                     return_dos_packet(inpkt, DOSTRUE, 0);
                 }
@@ -513,6 +518,8 @@ void entry()
                 LOG("INFO: ACTION_DIE packet received - shutting down\n");
 
                 /* abort ongoing IO operation */
+                /* TODO: fix crash that occurs when this packet is received while a transfer
+                 * is still running, error is AN_MemCorrupt (corrupt memory list) */
                 netio_abort();
 
                 /* tell DOS not to send us any more packets */
