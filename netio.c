@@ -9,7 +9,7 @@
 #include "netio.h"
 
 
-ULONG netio_errno = 0;
+ULONG g_netio_errno = 0;
 static struct IOExtSer *sreq;
 static struct IOExtTime *treq;
 
@@ -95,14 +95,14 @@ void netio_exit()
  * returns:
  * 0 if last operation was successful
  * the error code from the serial device (values > 0) if an error occurred
- * -1 if the status could not be determined, netio_errno is set in this case
+ * -1 if the status could not be determined, g_netio_errno is set in this case
  */
 BYTE netio_get_status()
 {
     /* check if IO operation has actually finished */
     if (!CheckIO((struct IORequest *) sreq)) {
         LOG("ERROR: IO operation has not yet finished\n");
-        netio_errno = ERROR_IO_NOT_FINISHED;
+        g_netio_errno = ERROR_IO_NOT_FINISHED;
         return -1;
     }
     return WaitIO((struct IORequest *) sreq);
@@ -166,10 +166,10 @@ static LONG slip_encode_buffer(Buffer *dbuf, const Buffer *sbuf)
     dbuf->b_size = nbytes_tot;
     if (nbytes < sbuf->b_size) {
         LOG("ERROR: could not copy all bytes to the destination\n");
-        netio_errno = ERROR_BUFFER_OVERFLOW;
+        g_netio_errno = ERROR_BUFFER_OVERFLOW;
         return DOSFALSE;
     }
-    netio_errno = 0;
+    g_netio_errno = 0;
     return DOSTRUE;
 }
 
@@ -182,7 +182,7 @@ static LONG slip_decode_buffer(Buffer *dbuf, const Buffer *sbuf)
     const UBYTE *src = sbuf->b_addr;
     UBYTE *dst       = dbuf->b_addr;
     int nbytes;
-    netio_errno = ERROR_BUFFER_OVERFLOW;
+    g_netio_errno = ERROR_BUFFER_OVERFLOW;
     for (nbytes = 0;
         nbytes < sbuf->b_size && nbytes < MAX_BUFFER_SIZE; 
 		nbytes++, src++, dst++) {
@@ -194,7 +194,7 @@ static LONG slip_decode_buffer(Buffer *dbuf, const Buffer *sbuf)
                 *dst = SLIP_ESC;
             else {
                 LOG("ERROR: invalid escape sequence found in SLIP frame: 0x%02lx\n", (ULONG) *src);
-                netio_errno = ERROR_BAD_NUMBER;
+                g_netio_errno = ERROR_BAD_NUMBER;
                 break;
             }
         }
@@ -206,7 +206,7 @@ static LONG slip_decode_buffer(Buffer *dbuf, const Buffer *sbuf)
         LOG("ERROR: could not copy all bytes to the destination\n");
         return DOSFALSE;
     }
-    netio_errno = 0;
+    g_netio_errno = 0;
     return DOSTRUE;
 }
 
@@ -244,14 +244,14 @@ static Buffer *create_udp_packet(const Buffer *data)
 
     if ((UDP_HDR_LEN + data->b_size) > MAX_BUFFER_SIZE) {
         LOG("ERROR: UDP packet would exceed maximum buffer size\n");
-        netio_errno = ERROR_BUFFER_OVERFLOW;
+        g_netio_errno = ERROR_BUFFER_OVERFLOW;
         return NULL;
     }
 
     /* create buffer large enough to hold the UDP header and the data */
     if ((pkt = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for UDP packet\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return NULL;
     }
 
@@ -265,7 +265,7 @@ static Buffer *create_udp_packet(const Buffer *data)
     /* copy data */
     memcpy(pkt->b_addr + sizeof(UDPHeader), data->b_addr, data->b_size);
     pkt->b_size = UDP_HDR_LEN + data->b_size;
-    netio_errno = 0;
+    g_netio_errno = 0;
     return pkt;
 }
 
@@ -276,12 +276,12 @@ static Buffer *get_data_from_udp_packet(const Buffer *pkt)
 
     if ((data = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for UDP data\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return NULL;
     }
     memcpy(data->b_addr, pkt->b_addr + sizeof(UDPHeader), pkt->b_size - sizeof(UDPHeader));
     data->b_size = pkt->b_size - sizeof(UDPHeader);
-    netio_errno = 0;
+    g_netio_errno = 0;
     return data;
 
 }
@@ -297,14 +297,14 @@ static Buffer *create_ip_packet(const Buffer *data)
 
     if ((IP_HDR_LEN + data->b_size) > MAX_BUFFER_SIZE) {
         LOG("ERROR: IP packet would exceed maximum buffer size\n");
-        netio_errno = ERROR_BUFFER_OVERFLOW;
+        g_netio_errno = ERROR_BUFFER_OVERFLOW;
         return NULL;
     }
 
     /* create buffer large enough to hold the IP header and the data */
     if ((pkt = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for IP packet\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return NULL;
     }
 
@@ -330,7 +330,7 @@ static Buffer *create_ip_packet(const Buffer *data)
     /* copy data */
     memcpy(pkt->b_addr + sizeof(IPHeader), data->b_addr, data->b_size);
     pkt->b_size = IP_HDR_LEN + data->b_size;
-    netio_errno = 0;
+    g_netio_errno = 0;
     return pkt;
 }
 
@@ -341,12 +341,12 @@ static Buffer *get_data_from_ip_packet(const Buffer *pkt)
 
     if ((data = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for IP data\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return NULL;
     }
     memcpy(data->b_addr, pkt->b_addr + sizeof(IPHeader), pkt->b_size - sizeof(IPHeader));
     data->b_size = pkt->b_size - sizeof(IPHeader);
-    netio_errno = 0;
+    g_netio_errno = 0;
     return data;
 
 }
@@ -362,13 +362,13 @@ static Buffer *create_slip_frame(const Buffer *data)
     /* create buffer large enough to hold the IP header and the data */
     if ((frame = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for SLIP frame\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return NULL;
     }
 
     if (slip_encode_buffer(frame, data) == DOSFALSE) {
         LOG("ERROR: could not copy all data to the SLIP frame\n");
-        /* netio_errno has already been set by slip_encode_buffer() */
+        /* g_netio_errno has already been set by slip_encode_buffer() */
         return NULL;
     }
     
@@ -379,10 +379,10 @@ static Buffer *create_slip_frame(const Buffer *data)
     }
     else {
         LOG("ERROR: could not add SLIP end-of-frame marker\n");
-        netio_errno = ERROR_BUFFER_OVERFLOW;
+        g_netio_errno = ERROR_BUFFER_OVERFLOW;
         return NULL;
     }
-    netio_errno = 0;
+    g_netio_errno = 0;
     return frame;
 }
 
@@ -401,12 +401,12 @@ static LONG send_slip_frame(const Buffer *frame, BOOL async)
         treq->tr_time.tv_secs    = NETIO_TIMEOUT;
         treq->tr_time.tv_micro   = 0;
         SendIO((struct IORequest *) treq);
-        netio_errno = 0;
+        g_netio_errno = 0;
         return DOSTRUE;
     }
     else {
         error = DoIO((struct IORequest *) sreq);
-        netio_errno = error;
+        g_netio_errno = error;
         if (error == 0)
             return DOSTRUE;
         else
@@ -431,12 +431,12 @@ static LONG recv_slip_frame(Buffer *frame, BOOL async)
         treq->tr_time.tv_secs    = NETIO_TIMEOUT;
         treq->tr_time.tv_micro   = 0;
         SendIO((struct IORequest *) treq);
-        netio_errno = 0;
+        g_netio_errno = 0;
         return DOSTRUE;
     }
     else {
         error = DoIO((struct IORequest *) sreq);
-        netio_errno = error;
+        g_netio_errno = error;
         if (error == 0) {
 #if DEBUG
             LOG("DEBUG: dump of received SLIP frame (%ld bytes):\n", frame->b_size);
@@ -469,29 +469,29 @@ static LONG send_tftp_packet(Buffer *pkt, BOOL async)
     prevbuf = curbuf;
     if ((curbuf = create_udp_packet(prevbuf)) == NULL) {
         LOG("ERROR: could not create UDP packet\n");
-        /* netio_errno has already been set by create_udp_packet() */
+        /* g_netio_errno has already been set by create_udp_packet() */
         return DOSFALSE;
     }
     delete_buffer(prevbuf);
     prevbuf = curbuf;
     if ((curbuf = create_ip_packet(prevbuf)) == NULL) {
         LOG("ERROR: could not create IP packet\n");
-        /* netio_errno has already been set by create_ip_packet() */
+        /* g_netio_errno has already been set by create_ip_packet() */
         return DOSFALSE;
     }
     delete_buffer(prevbuf);
     prevbuf = curbuf;
     if ((curbuf = create_slip_frame(prevbuf)) == NULL) {
         LOG("ERROR: could not create SLIP frame\n");
-        /* netio_errno has already been set by create_slip_frame() */
+        /* g_netio_errno has already been set by create_slip_frame() */
         return DOSFALSE;
     }
     delete_buffer(prevbuf);
     if (send_slip_frame(curbuf, async) == DOSFALSE) {
-        LOG("ERROR: error occurred while sending SLIP frame: %ld\n", netio_errno);
+        LOG("ERROR: error occurred while sending SLIP frame: %ld\n", g_netio_errno);
     }
     delete_buffer(curbuf);
-    if (netio_errno == 0)
+    if (g_netio_errno == 0)
         return DOSTRUE;
     else
         return DOSFALSE;
@@ -513,14 +513,14 @@ LONG send_tftp_req_packet(USHORT opcode, const char *fname)
      */
     if ((strlen(fname) + 12) > MAX_BUFFER_SIZE) {
         LOG("ERROR: TFTP packet would exceed maximum buffer size\n");
-        netio_errno = ERROR_BUFFER_OVERFLOW;
+        g_netio_errno = ERROR_BUFFER_OVERFLOW;
         return DOSFALSE;
     }
 
     /* create buffer large enough to hold the TFTP packet */
     if ((pkt = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for TFTP packet\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return DOSFALSE;
     }
 
@@ -543,7 +543,7 @@ LONG send_tftp_data_packet(USHORT blknum, const UBYTE *bytes, LONG nbytes)
 
     if ((pkt = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for TFTP packet\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return DOSFALSE;
     }
     pos = pkt->b_addr;
@@ -568,7 +568,7 @@ LONG recv_tftp_packet()
 
     if ((buf = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for SLIP frame\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return DOSFALSE;
     }
     return recv_slip_frame(buf, 1 /* receive asynchronously */);
@@ -587,12 +587,12 @@ LONG extract_tftp_packet(Buffer *pkt)
     prevbuf = &data;
     if ((curbuf = create_buffer(MAX_BUFFER_SIZE)) == NULL) {
         LOG("ERROR: could not create buffer for IP packet\n");
-        netio_errno = ERROR_NO_FREE_STORE;
+        g_netio_errno = ERROR_NO_FREE_STORE;
         return DOSFALSE;
     }
     if (slip_decode_buffer(curbuf, prevbuf) == DOSFALSE) {
         LOG("ERROR: error occured while decoding SLIP frame\n");
-        /* netio_errno has already been set by slip_decode_buffer() */
+        /* g_netio_errno has already been set by slip_decode_buffer() */
         return DOSFALSE;
     }
     /* We call FreeVec() directly instead of delete_buffer() because of the reconstructed buffer */
@@ -600,14 +600,14 @@ LONG extract_tftp_packet(Buffer *pkt)
     prevbuf = curbuf;
     if ((curbuf = get_data_from_ip_packet(prevbuf)) == NULL) {
         LOG("ERROR: error occurred while extracting data from IP packet\n");
-        /* netio_errno has already been set by get_data_from_ip_packet() */
+        /* g_netio_errno has already been set by get_data_from_ip_packet() */
         return DOSFALSE;
     }
     delete_buffer(prevbuf);
     prevbuf = curbuf;
     if ((curbuf = get_data_from_udp_packet(prevbuf)) == NULL) {
         LOG("ERROR: error occurred while extracting data from UDP packet\n");
-        /* netio_errno has already been set by get_data_from_udp_packet() */
+        /* g_netio_errno has already been set by get_data_from_udp_packet() */
         return DOSFALSE;
     }
 
@@ -615,7 +615,7 @@ LONG extract_tftp_packet(Buffer *pkt)
     pkt->b_size = curbuf->b_size;
     delete_buffer(prevbuf);
     delete_buffer(curbuf);
-    netio_errno = 0;
+    g_netio_errno = 0;
     return DOSTRUE;
 }
 

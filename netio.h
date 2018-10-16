@@ -130,6 +130,6 @@ USHORT get_blknum(const Buffer *pkt);
  * external references
  */
 extern struct MsgPort   *g_port;
-extern ULONG             netio_errno;    /* network IO error code */
+extern ULONG             g_netio_errno;    /* network IO error code */
 
 #endif /* CWNET_NETIO_H */

@@ -1,6 +1,9 @@
 ;
 ; simple batch file for running a full functional test
 ;
+; run this file on the Amiga with:
+; cd AMIGA:CWNet
+; execute cwtest.bat
 
 ; setup environment on the Unix side:
 ; cd ~/Programmieren/TFTP
@@ -22,7 +25,7 @@ copy devs:mountlist net://127.0.0.1/mountlist
 ; It seems we have to wait for the file transfers to finish, otherwise the serial interface
 ; gets disturbed and data gets lost (probably due to the chain handler -> Amiga Forever ->
 ; Windows -> Virtual Box -> socat -> TFTP server, wouldn't surprise me)
-wait 60
+wait 120 
 
 ; list all files transfered
 amiga:cwnet/listq

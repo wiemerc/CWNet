@@ -245,7 +245,7 @@ void entry()
                         else {
                             LOG("ERROR: sending write request for file '%s' to server failed\n", ftx->ftx_fname);
                             ftx->ftx_state = S_ERROR;
-                            ftx->ftx_error = netio_errno;
+                            ftx->ftx_error = g_netio_errno;
                             g_busy = 0;
                             send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                         }
@@ -268,7 +268,7 @@ void entry()
                     else {
                         LOG("ERROR: sending data packet #%ld to server failed\n", ftx->ftx_blknum);
                         ftx->ftx_state = S_ERROR;
-                        ftx->ftx_error = netio_errno;
+                        ftx->ftx_error = g_netio_errno;
                         g_busy = 0;
                         send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                     }
@@ -296,7 +296,7 @@ void entry()
                 else {
                     LOG("ERROR: sending data packet #%ld to server failed\n", ftx->ftx_blknum);
                     ftx->ftx_state = S_ERROR;
-                    ftx->ftx_error = netio_errno;
+                    ftx->ftx_error = g_netio_errno;
                     g_busy = 0;
                     send_internal_packet(&outpkt, ACTION_FILE_FAILED, ftx);
                 }

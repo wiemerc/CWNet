@@ -372,9 +372,9 @@ void do_write_return(struct DosPacket *inpkt, struct DosPacket *iopkt, struct St
     LOG("DEBUG: reading answer from server\n");
     iopkt->dp_Type = ACTION_READ_RETURN;
     if (recv_tftp_packet() == DOSFALSE) {
-        LOG("ERROR: reading answer from server failed with error %ld\n", netio_errno);
+        LOG("ERROR: reading answer from server failed with error %ld\n", g_netio_errno);
         ftx->ftx_state = S_ERROR;
-        ftx->ftx_error = netio_errno;
+        ftx->ftx_error = g_netio_errno;
         g_busy = 0;
         send_internal_packet(outpkt, ACTION_FILE_FAILED, ftx);
     }
@@ -413,9 +413,9 @@ void do_read_return(struct DosPacket *inpkt, struct StandardPacket *outpkt, Buff
 
     /* extract TFTP packet from received data */
     if (extract_tftp_packet(tftppkt) == DOSFALSE) {
-        LOG("ERROR: reading answer from server failed with error %ld\n", netio_errno);
+        LOG("ERROR: reading answer from server failed with error %ld\n", g_netio_errno);
         ftx->ftx_state = S_ERROR;
-        ftx->ftx_error = netio_errno;
+        ftx->ftx_error = g_netio_errno;
         g_busy = 0;
         send_internal_packet(outpkt, ACTION_FILE_FAILED, ftx);
     }
